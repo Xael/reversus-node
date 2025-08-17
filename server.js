@@ -19,6 +19,9 @@ const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { v
 const EFFECT_DECK_CONFIG = [{ name: 'Mais', count: 4 }, { name: 'Menos', count: 4 }, { name: 'Sobe', count: 4 }, { name: 'Desce', count: 4 }, { name: 'Pula', count: 4 }, { name: 'Reversus', count: 4 }, { name: 'Reversus Total', count: 1 }];
 const MAX_VALUE_CARDS_IN_HAND = 3;
 const MAX_EFFECT_CARDS_IN_HAND = 2;
+const TEAM_A_IDS = ['player-1', 'player-3'];
+const TEAM_B_IDS = ['player-2', 'player-4'];
+
 
 const shuffle = (array) => {
     for (let i = array.length - 1; i > 0; i--) {
@@ -40,22 +43,33 @@ const createDeck = (config, cardType) => {
 // Armazenamento em memória para as salas de jogo
 const rooms = {};
 
-function getRoomsList() {
+function getLobbyDataForRoom(room) {
+    return {
+        id: room.id,
+        name: room.name,
+        hostId: room.hostId,
+        players: room.players.map(p => ({ id: p.id, username: p.username, playerId: p.playerId })),
+        mode: room.mode,
+    };
+}
+
+function getPublicRoomsList() {
     return Object.values(rooms)
         .filter(r => !r.gameStarted)
         .map(r => ({
             id: r.id,
             name: r.name,
             playerCount: r.players.length,
-            mode: 'solo-4p', // Modo padrão por enquanto
+            mode: r.mode,
         }));
 }
 
 io.on('connection', (socket) => {
     console.log(`Jogador conectado: ${socket.id}`);
+    socket.emit('connected', { clientId: socket.id });
 
     socket.on('listRooms', () => {
-        socket.emit('roomList', getRoomsList());
+        socket.emit('roomList', getPublicRoomsList());
     });
 
     socket.on('createRoom', ({ username }) => {
@@ -67,17 +81,17 @@ io.on('connection', (socket) => {
             hostId: socket.id,
             players: [],
             gameStarted: false,
-            mode: 'solo-4p',
+            mode: 'solo-4p', // Modo Padrão
         };
         console.log(`Sala criada: ${roomId} por ${username}`);
         socket.emit('roomCreated', roomId);
-        io.emit('roomList', getRoomsList()); // Atualiza a lista para todos
+        io.emit('roomList', getPublicRoomsList());
     });
 
     socket.on('joinRoom', ({ roomId, username }) => {
         const room = rooms[roomId];
-        if (room && room.players.length < 4) {
-            socket.data.roomId = roomId; // Armazena o ID da sala no socket para referência futura
+        if (room && !room.gameStarted && room.players.length < 4) {
+            socket.data.roomId = roomId;
             socket.join(roomId);
 
             const newPlayer = { id: socket.id, username, playerId: `player-${room.players.length + 1}` };
@@ -85,18 +99,20 @@ io.on('connection', (socket) => {
             
             console.log(`${username} entrou na sala ${roomId}`);
             
-            const roomData = {
-                id: room.id,
-                name: room.name,
-                hostId: room.hostId,
-                players: room.players.map(p => ({ id: p.id, username: p.username })),
-                mode: room.mode,
-            };
-            
-            io.to(roomId).emit('lobbyUpdate', roomData); // Atualiza o lobby para todos na sala
-            io.emit('roomList', getRoomsList()); // Atualiza a contagem de jogadores na lista de salas
+            io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
+            io.emit('roomList', getPublicRoomsList());
         } else {
-            socket.emit('error', 'A sala está cheia ou não existe.');
+            socket.emit('error', 'A sala está cheia, já começou ou não existe.');
+        }
+    });
+    
+    socket.on('changeMode', (newMode) => {
+        const roomId = socket.data.roomId;
+        const room = rooms[roomId];
+        if (room && room.hostId === socket.id) {
+            room.mode = newMode;
+            console.log(`Sala ${roomId} mudou para o modo ${newMode}`);
+            io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
         }
     });
 
@@ -104,61 +120,58 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         if (room && room.hostId === socket.id && !room.gameStarted) {
             room.gameStarted = true;
-            io.emit('roomList', getRoomsList()); // Remove a sala da lista pública
+            io.emit('roomList', getPublicRoomsList());
 
-            // --- O SERVIDOR AGORA CRIA O ESTADO INICIAL DO JOGO ---
-            const playerIdsInGame = room.players.map(p => p.playerId);
+            const playerClients = room.players;
+            const playerIdsInGame = playerClients.map(p => p.playerId);
             const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
             const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
 
             const playersState = {};
-            room.players.forEach(clientPlayer => {
+            playerClients.forEach(clientPlayer => {
                 const pId = clientPlayer.playerId;
                 playersState[pId] = {
-                    id: pId,
-                    name: clientPlayer.username,
-                    isHuman: true, // Todos os jogadores no PvP são humanos
-                    hand: [],
-                    pathId: playerIdsInGame.indexOf(pId),
-                    position: 1,
-                    resto: null,
-                    nextResto: null,
-                    effects: { score: null, movement: null },
-                    playedCards: { value: [], effect: [] },
-                    playedValueCardThisTurn: false,
-                    liveScore: 0,
+                    id: pId, name: clientPlayer.username, isHuman: true,
+                    hand: [], pathId: playerIdsInGame.indexOf(pId), position: 1,
+                    resto: null, nextResto: null, effects: { score: null, movement: null },
+                    playedCards: { value: [], effect: [] }, playedValueCardThisTurn: false,
+                    liveScore: 0, status: 'neutral', isEliminated: false,
                 };
-                // Distribuir cartas
                 for (let i = 0; i < MAX_VALUE_CARDS_IN_HAND; i++) playersState[pId].hand.push(valueDeck.pop());
                 for (let i = 0; i < MAX_EFFECT_CARDS_IN_HAND; i++) playersState[pId].hand.push(effectDeck.pop());
             });
 
             const initialGameState = {
-                players: playersState,
-                playerIdsInGame,
+                players: playersState, playerIdsInGame,
                 decks: { value: valueDeck, effect: effectDeck },
                 discardPiles: { value: [], effect: [] },
-                // A lógica do tabuleiro (boardPaths) é complexa e será mantida no cliente por enquanto
-                // O servidor apenas gerencia jogadores, cartas e turnos.
-                boardPaths: [], // O cliente irá gerar isso
-                gamePhase: 'playing',
-                gameMode: room.mode,
-                currentPlayer: 'player-1',
-                turn: 1,
-                log: [`O jogo começou na ${room.name}!`],
+                gamePhase: 'playing', gameMode: room.mode, currentPlayer: 'player-1',
+                turn: 1, log: [`O jogo começou na ${room.name}!`],
+                reversusTotalActive: false, consecutivePasses: 0,
             };
             
-            // Envia o estado inicial para todos na sala
-            io.to(roomId).emit('gameStarted', initialGameState);
-            console.log(`Jogo iniciado na sala ${roomId}`);
+            // Lógica de Times para o modo Duplas
+            if (room.mode === 'duo') {
+                initialGameState.teamA = TEAM_A_IDS.filter(id => playerIdsInGame.includes(id));
+                initialGameState.teamB = TEAM_B_IDS.filter(id => playerIdsInGame.includes(id));
+            }
+
+            // Envia um estado de jogo personalizado para cada jogador
+            playerClients.forEach(client => {
+                const personalizedState = {
+                    ...initialGameState,
+                    myPlayerId: client.playerId, // Informa ao cliente qual jogador ele é
+                };
+                io.to(client.id).emit('gameStarted', personalizedState);
+            });
+            console.log(`Jogo iniciado na sala ${roomId} no modo ${room.mode}`);
         }
     });
     
-    // --- Retransmissores de Ações (Action Relays) ---
+    // Retransmissores de Ações (Action Relays)
     socket.on('playCard', (data) => {
         const roomId = socket.data.roomId;
         if(roomId) {
-            // Retransmite a ação para TODOS os outros clientes na sala
             socket.to(roomId).emit('action:playCard', data);
         }
     });
@@ -184,25 +197,28 @@ io.on('connection', (socket) => {
         const roomId = socket.data.roomId;
         if (roomId && rooms[roomId]) {
             const room = rooms[roomId];
-            // Remove o jogador da sala
+            const disconnectedPlayer = room.players.find(p => p.id === socket.id);
+            if (!disconnectedPlayer) return;
+
             room.players = room.players.filter(p => p.id !== socket.id);
+            
+            if (room.gameStarted) {
+                io.to(roomId).emit('playerDisconnected', { 
+                    playerId: disconnectedPlayer.playerId,
+                    message: `${disconnectedPlayer.username} se desconectou.`
+                });
+            }
             
             if (room.players.length === 0) {
                 delete rooms[roomId];
                 console.log(`Sala vazia e deletada: ${roomId}`);
             } else {
-                 // Se o líder saiu, elege um novo
                 if (room.hostId === socket.id) {
                     room.hostId = room.players[0].id;
                 }
-                 const roomData = {
-                    id: room.id, name: room.name, hostId: room.hostId,
-                    players: room.players.map(p => ({ id: p.id, username: p.username })),
-                    mode: room.mode,
-                };
-                io.to(roomId).emit('lobbyUpdate', roomData);
+                io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
             }
-            io.emit('roomList', getRoomsList());
+            io.emit('roomList', getPublicRoomsList());
         }
     };
 
@@ -210,7 +226,6 @@ io.on('connection', (socket) => {
     socket.on('disconnect', handleDisconnect);
 });
 
-// Usa a porta do ambiente ou 3000 como padrão
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`--- SERVIDOR DE JOGO REVERSUS ONLINE ---`);
