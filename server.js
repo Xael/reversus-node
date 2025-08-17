@@ -103,6 +103,16 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
 
     let effectName = card.isLocked ? card.lockedEffect : card.name;
     const originalCardName = card.name;
+    
+    // APLICAÇÃO DE IMUNIDADE: Verifica se o alvo está imune
+    const isDuo = gameState.gameMode === 'duo';
+    const targetTeamIds = isDuo ? (TEAM_A_IDS.includes(targetId) ? TEAM_A_IDS : TEAM_B_IDS) : [targetId];
+    const isImmune = gameState.activeFieldEffects.some(fe => fe.name === 'Imunidade' && targetTeamIds.includes(fe.appliesTo));
+    
+    if (isImmune && (effectName === 'Menos' || effectName === 'Desce')) {
+        gameState.log.unshift({ type: 'system', message: `${target.name} está imune a ${effectName} nesta rodada!` });
+        return; // Bloqueia o efeito
+    }
 
     if (gameState.reversusTotalActive && originalCardName !== 'Reversus Total' && !card.isLocked) {
         const inverted = getInverseEffect(effectName);
@@ -171,15 +181,115 @@ const triggerServerFieldEffects = (room) => {
 
         if (space && space.effectName && !space.isUsed) {
             const effectName = space.effectName;
-            const isPositive = POSITIVE_EFFECTS.hasOwnProperty(effectName);
-            // Server-side effects are simplified: they are just flags for the scoring logic.
-            // No complex card swaps or UI interactions.
-            const simpleEffects = ['Resto Maior', 'Resto Menor', 'Imunidade', 'Desafio', 'Impulso', 'Castigo', 'Parada', 'Super Exposto'];
-            if (simpleEffects.includes(effectName)) {
-                gameState.activeFieldEffects.push({ name: effectName, type: isPositive ? 'positive' : 'negative', appliesTo: id });
-                gameState.log.unshift({ type: 'system', message: `${player.name} ativou o efeito de campo: ${effectName}!` });
-                space.isUsed = true; // Mark as used
+            gameState.log.unshift({ type: 'system', message: `${player.name} ativou o efeito de campo: ${effectName}!` });
+            
+            let effectSucceeded = false;
+            const isDuo = gameState.gameMode === 'duo';
+            const partner = isDuo ? gameState.players[TEAM_A_IDS.includes(id) ? TEAM_A_IDS.find(pId => pId !== id) : TEAM_B_IDS.find(pId => pId !== id)] : null;
+            
+            switch (effectName) {
+                case 'Carta Menor': {
+                    const valueCards = player.hand.filter(c => c.type === 'value').sort((a,b) => a.value - b.value);
+                    if (valueCards.length > 0) {
+                        const cardToDiscard = valueCards[0];
+                        player.hand = player.hand.filter(c => c.id !== cardToDiscard.id);
+                        gameState.discardPiles.value.push(cardToDiscard);
+                        const newCard = dealCard(gameState, 'value');
+                        if (newCard) player.hand.push(newCard);
+                        gameState.log.unshift({ type: 'system', message: `${player.name} descartou ${cardToDiscard.name} e comprou uma nova carta.` });
+                        effectSucceeded = true;
+                    }
+                    if (isDuo && partner) {
+                        const partnerValueCards = partner.hand.filter(c => c.type === 'value').sort((a,b) => a.value - b.value);
+                        if (partnerValueCards.length > 0) {
+                             const cardToDiscard = partnerValueCards[0];
+                             partner.hand = partner.hand.filter(c => c.id !== cardToDiscard.id);
+                             gameState.discardPiles.value.push(cardToDiscard);
+                             const newCard = dealCard(gameState, 'value');
+                             if (newCard) partner.hand.push(newCard);
+                             gameState.log.unshift({ type: 'system', message: `${partner.name} (dupla) também descartou ${cardToDiscard.name} e comprou uma nova carta.` });
+                             effectSucceeded = true;
+                        }
+                    }
+                    break;
+                }
+                case 'Carta Maior': {
+                    const valueCards = player.hand.filter(c => c.type === 'value').sort((a,b) => b.value - a.value);
+                    if (valueCards.length > 0) {
+                        const cardToDiscard = valueCards[0];
+                        player.hand = player.hand.filter(c => c.id !== cardToDiscard.id);
+                        gameState.discardPiles.value.push(cardToDiscard);
+                        const newCard = dealCard(gameState, 'value');
+                        if (newCard) player.hand.push(newCard);
+                        gameState.log.unshift({ type: 'system', message: `${player.name} descartou ${cardToDiscard.name} e comprou uma nova carta.` });
+                        effectSucceeded = true;
+                    }
+                    if (isDuo && partner) {
+                        const partnerValueCards = partner.hand.filter(c => c.type === 'value').sort((a,b) => b.value - a.value);
+                         if (partnerValueCards.length > 0) {
+                             const cardToDiscard = partnerValueCards[0];
+                             partner.hand = partner.hand.filter(c => c.id !== cardToDiscard.id);
+                             gameState.discardPiles.value.push(cardToDiscard);
+                             const newCard = dealCard(gameState, 'value');
+                             if (newCard) partner.hand.push(newCard);
+                             gameState.log.unshift({ type: 'system', message: `${partner.name} (dupla) também descartou ${cardToDiscard.name} e comprou uma nova carta.` });
+                             effectSucceeded = true;
+                        }
+                    }
+                    break;
+                }
+                case 'Troca Justa': {
+                     const opponents = gameState.playerIdsInGame.filter(oid => oid !== id && !gameState.players[oid].isEliminated);
+                     if (opponents.length > 0) {
+                        const targetOpponent = gameState.players[opponents[Math.floor(Math.random() * opponents.length)]];
+                        const myCards = player.hand.filter(c => c.type === 'value').sort((a, b) => a.value - b.value);
+                        const opponentCards = targetOpponent.hand.filter(c => c.type === 'value').sort((a, b) => b.value - a.value);
+                        if (myCards.length > 0 && opponentCards.length > 0) {
+                            const cardToGive = myCards[0]; const cardToTake = opponentCards[0];
+                            player.hand = player.hand.filter(c => c.id !== cardToGive.id); player.hand.push(cardToTake);
+                            targetOpponent.hand = targetOpponent.hand.filter(c => c.id !== cardToTake.id); targetOpponent.hand.push(cardToGive);
+                            gameState.log.unshift({ type: 'system', message: `${player.name} trocou sua carta ${cardToGive.name} pela carta ${cardToTake.name} de ${targetOpponent.name}.` });
+                            effectSucceeded = true;
+                        }
+                    }
+                    break;
+                }
+                case 'Troca Injusta': {
+                    const opponents = gameState.playerIdsInGame.filter(oid => oid !== id && !gameState.players[oid].isEliminated);
+                     if (opponents.length > 0) {
+                        const targetOpponent = gameState.players[opponents[Math.floor(Math.random() * opponents.length)]];
+                        const myCards = player.hand.filter(c => c.type === 'value').sort((a, b) => b.value - a.value);
+                        const opponentCards = targetOpponent.hand.filter(c => c.type === 'value').sort((a, b) => a.value - b.value);
+                        if (myCards.length > 0 && opponentCards.length > 0) {
+                            const cardToGive = myCards[0]; const cardToTake = opponentCards[0];
+                            player.hand = player.hand.filter(c => c.id !== cardToGive.id); player.hand.push(cardToTake);
+                            targetOpponent.hand = targetOpponent.hand.filter(c => c.id !== cardToTake.id); targetOpponent.hand.push(cardToGive);
+                            gameState.log.unshift({ type: 'system', message: `${player.name} foi forçado a trocar ${cardToGive.name} pela ${cardToTake.name} de ${targetOpponent.name}.` });
+                            effectSucceeded = true;
+                        }
+                    }
+                    break;
+                }
+                case 'Total Revesus Nada!': {
+                    const effectCards = player.hand.filter(c => c.type === 'effect');
+                    player.hand = player.hand.filter(c => c.type !== 'effect');
+                    gameState.discardPiles.effect.push(...effectCards);
+                    if (effectCards.length > 0) {
+                        gameState.log.unshift({ type: 'system', message: `${player.name} descartou todas as ${effectCards.length} cartas de efeito.` });
+                        effectSucceeded = true;
+                    }
+                    break;
+                }
+                default: { // All simple flag-based effects
+                    const isPositive = POSITIVE_EFFECTS.hasOwnProperty(effectName);
+                    const appliesToList = (isDuo && partner && ['Imunidade', 'Desafio', 'Impulso', 'Super Exposto', 'Castigo', 'Parada'].includes(effectName)) ? [player.id, partner.id] : [player.id];
+                    appliesToList.forEach(targetId => {
+                         gameState.activeFieldEffects.push({ name: effectName, type: isPositive ? 'positive' : 'negative', appliesTo: targetId });
+                    });
+                    effectSucceeded = true;
+                }
             }
+            if (effectSucceeded) space.isUsed = true;
         }
     });
 };
