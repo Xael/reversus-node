@@ -1,12 +1,13 @@
 {
-  "name": "reversus-node",
+  "name": "reversus-pvp-server",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "Servidor PvP para o jogo Reversus",
+  "main": "server.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "socket.io": "^4.8.1"
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
   }
 }
