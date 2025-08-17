@@ -10,7 +10,7 @@ const server = http.createServer(app);
 
 // Adicione o seu Google Client ID aqui. Por segurança, em um projeto real,
 // isso viria de uma variável de ambiente (process.env.GOOGLE_CLIENT_ID).
-const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 const io = new Server(server, {
