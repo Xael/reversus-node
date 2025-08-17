@@ -162,8 +162,8 @@ io.on('connection', (socket) => {
     });
 });
 
-// CORREÇÃO: Usar a porta fornecida pelo ambiente (EasyPanel) ou 3000 como padrão.
+// CORREÇÃO FINAL: Usar a porta do ambiente E escutar em '0.0.0.0'.
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`Servidor PvP está rodando na porta ${PORT}`);
 });
