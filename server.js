@@ -118,55 +118,72 @@ io.on('connection', (socket) => {
 
     socket.on('startGame', (roomId) => {
         const room = rooms[roomId];
-        if (room && room.hostId === socket.id && !room.gameStarted) {
-            room.gameStarted = true;
-            io.emit('roomList', getPublicRoomsList());
-
-            const playerClients = room.players;
-            const playerIdsInGame = playerClients.map(p => p.playerId);
-            const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
-            const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
-
-            const playersState = {};
-            playerClients.forEach(clientPlayer => {
-                const pId = clientPlayer.playerId;
-                playersState[pId] = {
-                    id: pId, name: clientPlayer.username, isHuman: true,
-                    hand: [], pathId: playerIdsInGame.indexOf(pId), position: 1,
-                    resto: null, nextResto: null, effects: { score: null, movement: null },
-                    playedCards: { value: [], effect: [] }, playedValueCardThisTurn: false,
-                    liveScore: 0, status: 'neutral', isEliminated: false,
-                };
-                for (let i = 0; i < MAX_VALUE_CARDS_IN_HAND; i++) playersState[pId].hand.push(valueDeck.pop());
-                for (let i = 0; i < MAX_EFFECT_CARDS_IN_HAND; i++) playersState[pId].hand.push(effectDeck.pop());
-            });
-
-            const initialGameState = {
-                players: playersState, playerIdsInGame,
-                decks: { value: valueDeck, effect: effectDeck },
-                discardPiles: { value: [], effect: [] },
-                gamePhase: 'playing', gameMode: room.mode, currentPlayer: 'player-1',
-                turn: 1, log: [`O jogo começou na ${room.name}!`],
-                reversusTotalActive: false, consecutivePasses: 0,
-                activeFieldEffects: [], // CORREÇÃO: Adiciona a propriedade que faltava
-            };
-            
-            // Lógica de Times para o modo Duplas
-            if (room.mode === 'duo') {
-                initialGameState.teamA = TEAM_A_IDS.filter(id => playerIdsInGame.includes(id));
-                initialGameState.teamB = TEAM_B_IDS.filter(id => playerIdsInGame.includes(id));
-            }
-
-            // Envia um estado de jogo personalizado para cada jogador
-            playerClients.forEach(client => {
-                const personalizedState = {
-                    ...initialGameState,
-                    myPlayerId: client.playerId, // Informa ao cliente qual jogador ele é
-                };
-                io.to(client.id).emit('gameStarted', personalizedState);
-            });
-            console.log(`Jogo iniciado na sala ${roomId} no modo ${room.mode}`);
+        if (!room || room.hostId !== socket.id || room.gameStarted) return;
+        
+        // Validação do lado do servidor para garantir que o número de jogadores é correto para o modo
+        const playerCount = room.players.length;
+        let isValidStart = false;
+        switch (room.mode) {
+            case 'solo-2p': isValidStart = playerCount === 2; break;
+            case 'solo-3p': isValidStart = playerCount === 3; break;
+            case 'solo-4p': isValidStart = playerCount === 4; break;
+            case 'duo': isValidStart = playerCount === 4; break;
         }
+
+        if (!isValidStart) {
+            console.log(`Tentativa de iniciar o jogo na sala ${roomId} com configuração inválida.`);
+            socket.emit('error', 'Não é possível iniciar a partida. O número de jogadores é incorreto para o modo de jogo selecionado.');
+            return;
+        }
+
+        room.gameStarted = true;
+        io.emit('roomList', getPublicRoomsList());
+
+        const playerClients = room.players;
+        const playerIdsInGame = playerClients.map(p => p.playerId);
+        const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
+        const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
+
+        const playersState = {};
+        playerClients.forEach(clientPlayer => {
+            const pId = clientPlayer.playerId;
+            playersState[pId] = {
+                id: pId, name: clientPlayer.username, isHuman: true,
+                hand: [], pathId: playerIdsInGame.indexOf(pId), position: 1,
+                resto: null, nextResto: null, effects: { score: null, movement: null },
+                playedCards: { value: [], effect: [] }, playedValueCardThisTurn: false,
+                liveScore: 0, status: 'neutral', isEliminated: false,
+            };
+            for (let i = 0; i < MAX_VALUE_CARDS_IN_HAND; i++) playersState[pId].hand.push(valueDeck.pop());
+            for (let i = 0; i < MAX_EFFECT_CARDS_IN_HAND; i++) playersState[pId].hand.push(effectDeck.pop());
+        });
+
+        const initialGameState = {
+            players: playersState, playerIdsInGame,
+            decks: { value: valueDeck, effect: effectDeck },
+            discardPiles: { value: [], effect: [] },
+            gamePhase: 'playing', gameMode: room.mode, currentPlayer: 'player-1',
+            turn: 1, log: [`O jogo começou na ${room.name}!`],
+            reversusTotalActive: false, consecutivePasses: 0,
+            activeFieldEffects: [],
+            revealedHands: [], // CORREÇÃO CRÍTICA: Adiciona a propriedade que faltava.
+        };
+        
+        // Lógica de Times para o modo Duplas
+        if (room.mode === 'duo') {
+            initialGameState.teamA = TEAM_A_IDS.filter(id => playerIdsInGame.includes(id));
+            initialGameState.teamB = TEAM_B_IDS.filter(id => playerIdsInGame.includes(id));
+        }
+
+        // Envia um estado de jogo personalizado para cada jogador
+        playerClients.forEach(client => {
+            const personalizedState = {
+                ...initialGameState,
+                myPlayerId: client.playerId, // Informa ao cliente qual jogador ele é
+            };
+            io.to(client.id).emit('gameStarted', personalizedState);
+        });
+        console.log(`Jogo iniciado na sala ${roomId} no modo ${room.mode}`);
     });
     
     // Retransmissores de Ações (Action Relays)
