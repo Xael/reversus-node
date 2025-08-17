@@ -6,6 +6,14 @@ const { OAuth2Client } = require('google-auth-library');
 const db = require('./db.js');
 
 const app = express();
+
+// 🔥 middleware para corrigir COOP/COEP
+app.use((req, res, next) => {
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+  res.setHeader("Cross-Origin-Embedder-Policy", "unsafe-none");
+  next();
+});
+
 const server = http.createServer(app);
 
 // Adicione o seu Google Client ID aqui. Por segurança, em um projeto real,
