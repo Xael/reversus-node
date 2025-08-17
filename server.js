@@ -2,10 +2,14 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
-const path = require('path');
+// O 'path' não é mais necessário
 
 const app = express();
 const server = http.createServer(app);
+
+// --- CORREÇÃO DE CORS ---
+// A lista de origens permitidas já incluía o domínio correto,
+// mas mantemos a configuração explícita para garantir.
 const io = new Server(server, {
   cors: {
     origin: ["https://reversus-game.dke42d.easypanel.host", "https://reversus.online"],
@@ -13,16 +17,15 @@ const io = new Server(server, {
   }
 });
 
-// Serve static files from the root directory
-app.use(express.static(path.join(__dirname)));
-
-// Serve index.html for the root URL
+// --- Rota de Verificação de Saúde (Health Check) ---
+// Substituímos o código que servia arquivos (e causava o crash)
+// por uma resposta simples para confirmar que o servidor está no ar.
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  res.status(200).send('Reversus PvP Server is running and healthy!');
 });
 
-// --- Game Logic on Server ---
-// These would be imported from your game logic files, adapted for Node.js
+
+// --- Lógica do Jogo no Servidor (sem alterações aqui) ---
 const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { value: 6, count: 8 }, { value: 8, count: 6 }, { value: 10, count: 4 }];
 const EFFECT_DECK_CONFIG = [{ name: 'Mais', count: 4 }, { name: 'Menos', count: 4 }, { name: 'Sobe', count: 4 }, { name: 'Desce', count: 4 }, { name: 'Pula', count: 4 }, { name: 'Reversus', count: 4 }, { name: 'Reversus Total', count: 1 }];
 const MASTER_PLAYER_IDS = ['player-1', 'player-2', 'player-3', 'player-4'];
@@ -57,10 +60,10 @@ const generateBoardPaths = () => {
     }
     return paths;
 };
-// --- End Game Logic ---
+// --- Fim da Lógica do Jogo ---
 
 
-// In-memory store for game rooms and states
+// Armazenamento em memória para salas e estados de jogo
 const rooms = {};
 
 function getRoomsList() {
@@ -85,7 +88,7 @@ function sendStateToPlayers(roomId) {
             myPlayerId: client.playerId,
         };
 
-        // Create a personalized view of each player
+        // Cria uma visão personalizada para cada jogador
         for (const pId in room.gameState.players) {
             const player = room.gameState.players[pId];
             const isMe = pId === client.playerId;
@@ -120,7 +123,7 @@ io.on('connection', (socket) => {
             players: [],
             gameState: null,
             gameStarted: false,
-            mode: 'solo-4p', // Default mode
+            mode: 'solo-4p', // Modo padrão
         };
         console.log(`Room created: ${roomId}`);
         io.emit('roomList', getRoomsList());
@@ -158,7 +161,7 @@ io.on('connection', (socket) => {
              room.gameStarted = true;
              io.emit('roomList', getRoomsList());
 
-             // --- Initialize Game State on Server ---
+             // --- Inicializa o Estado do Jogo no Servidor ---
              const playerIdsInGame = room.players.map(p => p.playerId);
              const players = {};
              room.players.forEach(p_client => {
@@ -167,7 +170,7 @@ io.on('connection', (socket) => {
                      name: p_client.username,
                      isHuman: true,
                      hand: [],
-                     // ... other initial player properties
+                     // ... outras propriedades iniciais do jogador
                      pathId: playerIdsInGame.indexOf(p_client.playerId),
                      position: 1,
                      resto: null,
@@ -182,7 +185,7 @@ io.on('connection', (socket) => {
              const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
              const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
 
-             // Deal cards
+             // Distribui as cartas
              Object.values(players).forEach(p => {
                  for(let i=0; i < MAX_VALUE_CARDS_IN_HAND; i++) p.hand.push(valueDeck.pop());
                  for(let i=0; i < MAX_EFFECT_CARDS_IN_HAND; i++) p.hand.push(effectDeck.pop());
@@ -198,7 +201,7 @@ io.on('connection', (socket) => {
                 currentPlayer: 'player-1',
                 turn: 1,
                 log: [`O jogo começou na ${room.name}!`],
-                // ... other initial game state properties
+                // ... outras propriedades iniciais do estado do jogo
              };
              
              io.to(roomId).emit('gameStarted');
@@ -213,9 +216,9 @@ io.on('connection', (socket) => {
         const player = state.players[data.playerId];
         const card = player.hand.find(c => c.id === data.cardId);
 
-        // TODO: Add robust validation here (is it their turn? is the move legal?)
+        // TODO: Adicionar validação robusta aqui (é o turno dele? a jogada é legal?)
 
-        // Simple logic for now: move card from hand to played
+        // Lógica simples por enquanto: move a carta da mão para jogada
         const cardIndex = player.hand.findIndex(c => c.id === data.cardId);
         if (cardIndex > -1) {
             player.hand.splice(cardIndex, 1);
@@ -235,7 +238,7 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         const state = room.gameState;
         
-        // TODO: Add validation (is it their turn?)
+        // TODO: Adicionar validação (é o turno dele?)
 
         const currentIndex = state.playerIdsInGame.indexOf(playerId);
         const nextIndex = (currentIndex + 1) % state.playerIdsInGame.length;
@@ -265,7 +268,7 @@ io.on('connection', (socket) => {
                 delete rooms[roomId];
                 console.log(`Room deleted: ${roomId}`);
             } else {
-                // If the host disconnects, assign a new host
+                // Se o anfitrião desconectar, atribui um novo
                 if (rooms[roomId].hostId === socket.id) {
                     rooms[roomId].hostId = rooms[roomId].players[0].id;
                 }
