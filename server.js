@@ -165,7 +165,7 @@ io.on('connection', (socket) => {
             gamePhase: 'playing', gameMode: room.mode, currentPlayer: 'player-1',
             turn: 1, log: [`O jogo começou na ${room.name}!`],
             reversusTotalActive: false, consecutivePasses: 0,
-            activeFieldEffects: [],
+            activeFieldEffects: [], // CORREÇÃO: Propriedade que faltava
             revealedHands: [], // CORREÇÃO CRÍTICA: Adiciona a propriedade que faltava.
         };
         
@@ -190,14 +190,15 @@ io.on('connection', (socket) => {
     socket.on('playCard', (data) => {
         const roomId = socket.data.roomId;
         if(roomId) {
-            socket.to(roomId).emit('action:playCard', data);
+            // Retransmite para todos os outros na sala, incluindo o remetente para manter a consistência do estado
+            io.to(roomId).emit('action:playCard', data);
         }
     });
 
     socket.on('endTurn', (data) => {
         const roomId = socket.data.roomId;
         if(roomId) {
-            socket.to(roomId).emit('action:endTurn', data);
+            io.to(roomId).emit('action:endTurn', data);
         }
     });
 
@@ -218,13 +219,22 @@ io.on('connection', (socket) => {
             const disconnectedPlayer = room.players.find(p => p.id === socket.id);
             if (!disconnectedPlayer) return;
 
-            // Se o jogo já começou, avisa a todos e encerra a sala.
             if (room.gameStarted) {
-                io.to(roomId).emit('gameAborted', { 
-                    message: `O jogador ${disconnectedPlayer.username} se desconectou. A partida foi encerrada.`
-                });
-                delete rooms[roomId];
-                console.log(`Partida na sala ${roomId} encerrada devido a desconexão.`);
+                // MODO DUPLAS: Encerra a partida
+                if (room.mode === 'duo') {
+                    io.to(roomId).emit('gameAborted', { 
+                        message: `O jogador ${disconnectedPlayer.username} se desconectou. A partida em dupla foi encerrada.`
+                    });
+                    delete rooms[roomId];
+                    console.log(`Partida (Dupla) na sala ${roomId} encerrada devido a desconexão.`);
+                } else {
+                // MODOS FFA: Apenas elimina o jogador e avisa os outros
+                    io.to(roomId).emit('playerDisconnected', { 
+                        playerId: disconnectedPlayer.playerId,
+                        username: disconnectedPlayer.username 
+                    });
+                    console.log(`Jogador ${disconnectedPlayer.username} eliminado da partida na sala ${roomId}. O jogo continua.`);
+                }
                 io.emit('roomList', getPublicRoomsList());
                 return;
             }
