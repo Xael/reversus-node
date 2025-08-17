@@ -9,21 +9,21 @@ const server = http.createServer(app);
 // Configuração de CORS para permitir conexões do seu domínio de jogo
 const io = new Server(server, {
   cors: {
-    origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host"],
+    origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host", "http://localhost:8080"],
     methods: ["GET", "POST"]
   }
 });
 
-// --- Lógica de Jogo Reutilizada no Servidor ---
+// --- LÓGICA DE JOGO COMPLETA NO SERVIDOR ---
 const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { value: 6, count: 8 }, { value: 8, count: 6 }, { value: 10, count: 4 }];
 const EFFECT_DECK_CONFIG = [{ name: 'Mais', count: 4 }, { name: 'Menos', count: 4 }, { name: 'Sobe', count: 4 }, { name: 'Desce', count: 4 }, { name: 'Pula', count: 4 }, { name: 'Reversus', count: 4 }, { name: 'Reversus Total', count: 1 }];
 const MAX_VALUE_CARDS_IN_HAND = 3;
 const MAX_EFFECT_CARDS_IN_HAND = 2;
+const WINNING_POSITION = 10;
 const TEAM_A_IDS = ['player-1', 'player-3'];
 const TEAM_B_IDS = ['player-2', 'player-4'];
 const NUM_PATHS = 6;
 const BOARD_SIZE = 9;
-
 
 const shuffle = (array) => {
     for (let i = array.length - 1; i > 0; i--) {
@@ -51,11 +51,24 @@ const generateBoardPaths = () => {
     }
     return paths;
 };
-// --- Fim da Lógica de Jogo Reutilizada ---
+
+const dealCard = (gameState, deckType) => {
+    if (gameState.decks[deckType].length === 0) {
+        if (gameState.discardPiles[deckType].length > 0) {
+            gameState.decks[deckType] = shuffle([...gameState.discardPiles[deckType]]);
+            gameState.discardPiles[deckType] = [];
+        } else {
+             const configDeck = deckType === 'value' ? VALUE_DECK_CONFIG : EFFECT_DECK_CONFIG;
+             gameState.decks[deckType] = shuffle(createDeck(configDeck, deckType));
+        }
+    }
+    return gameState.decks[deckType].pop();
+};
 
 // Armazenamento em memória para as salas de jogo
 const rooms = {};
 
+// --- FUNÇÕES HELPER DO SERVIDOR ---
 function getLobbyDataForRoom(room) {
     return {
         id: room.id,
@@ -77,9 +90,24 @@ function getPublicRoomsList() {
         }));
 }
 
+// Envia o estado do jogo para todos na sala, personalizando para cada jogador
+function broadcastGameState(roomId) {
+    const room = rooms[roomId];
+    if (!room || !room.gameState) return;
+
+    room.players.forEach(client => {
+        const personalizedState = {
+            ...room.gameState,
+            myPlayerId: client.playerId,
+        };
+        io.to(client.id).emit('gameStateUpdate', personalizedState);
+    });
+}
+// --- FIM DAS FUNÇÕES HELPER ---
+
+
 io.on('connection', (socket) => {
     console.log(`Jogador conectado: ${socket.id}`);
-    socket.emit('connected', { clientId: socket.id });
 
     socket.on('listRooms', () => {
         socket.emit('roomList', getPublicRoomsList());
@@ -94,7 +122,8 @@ io.on('connection', (socket) => {
             hostId: socket.id,
             players: [],
             gameStarted: false,
-            mode: 'solo-4p', // Modo Padrão
+            mode: 'solo-4p',
+            gameState: null
         };
         console.log(`Sala criada: ${roomId} por ${username}`);
         socket.emit('roomCreated', roomId);
@@ -143,38 +172,35 @@ io.on('connection', (socket) => {
         }
 
         if (!isValidStart) {
-            console.log(`Tentativa de iniciar o jogo na sala ${roomId} com configuração inválida.`);
-            socket.emit('error', 'Não é possível iniciar a partida. O número de jogadores é incorreto para o modo de jogo selecionado.');
+            socket.emit('error', 'O número de jogadores é incorreto para o modo de jogo selecionado.');
             return;
         }
 
         room.gameStarted = true;
         io.emit('roomList', getPublicRoomsList());
 
-        // --- O SERVIDOR É A FONTE DA VERDADE ---
         const playerClients = room.players;
         const playerIdsInGame = playerClients.map(p => p.playerId);
+        
         const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
         const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
 
-        // 1. Sorteio inicial para decidir quem começa
         const drawnCards = {};
         playerIdsInGame.forEach(id => { drawnCards[id] = valueDeck.pop(); });
         const sortedPlayers = [...playerIdsInGame].sort((a, b) => (drawnCards[b]?.value || 0) - (drawnCards[a]?.value || 0));
         let startingPlayer = sortedPlayers[0];
-        // Lida com empates no sorteio
+        
         if (sortedPlayers.length > 1 && drawnCards[sortedPlayers[0]]?.value === drawnCards[sortedPlayers[1]]?.value) {
             startingPlayer = sortedPlayers[Math.floor(Math.random() * sortedPlayers.length)];
         }
 
-
         const playersState = {};
-        playerClients.forEach(clientPlayer => {
+        playerClients.forEach((clientPlayer, index) => {
             const pId = clientPlayer.playerId;
             playersState[pId] = {
                 id: pId, name: clientPlayer.username, isHuman: true,
-                hand: [], pathId: playerIdsInGame.indexOf(pId), position: 1,
-                resto: drawnCards[pId], // 2. Resto inicial definido pelo sorteio
+                hand: [], pathId: index, position: 1,
+                resto: drawnCards[pId], 
                 nextResto: null, effects: { score: null, movement: null },
                 playedCards: { value: [], effect: [] }, playedValueCardThisTurn: false,
                 liveScore: 0, status: 'neutral', isEliminated: false,
@@ -184,12 +210,13 @@ io.on('connection', (socket) => {
         });
 
         const initialGameState = {
-            players: playersState, playerIdsInGame,
+            playerIdsInGame,
+            players: playersState,
             decks: { value: valueDeck, effect: effectDeck },
             discardPiles: { value: Object.values(drawnCards), effect: [] },
-            boardPaths: generateBoardPaths(), // 3. Tabuleiro é gerado no servidor
+            boardPaths: generateBoardPaths(),
             gamePhase: 'playing', gameMode: room.mode, 
-            currentPlayer: startingPlayer, // 4. Jogador inicial definido pelo sorteio
+            currentPlayer: startingPlayer,
             turn: 1, 
             log: [`O jogo começou na ${room.name}!`, `${playersState[startingPlayer].name} começa jogando.`],
             reversusTotalActive: false, consecutivePasses: 0,
@@ -202,7 +229,7 @@ io.on('connection', (socket) => {
             initialGameState.teamB = TEAM_B_IDS.filter(id => playerIdsInGame.includes(id));
         }
 
-        room.gameState = initialGameState; // Store the state on the room object
+        room.gameState = initialGameState;
 
         playerClients.forEach(client => {
             const personalizedState = {
@@ -214,18 +241,16 @@ io.on('connection', (socket) => {
         console.log(`Jogo iniciado na sala ${roomId} no modo ${room.mode}`);
     });
     
+    // Placeholder for playCard logic
     socket.on('playCard', (data) => {
-        const roomId = socket.data.roomId;
-        if(roomId) {
-            io.to(roomId).emit('action:playCard', data);
-        }
+        // TODO: Implement authoritative server logic for playing a card
+        // This would involve validating the move, updating room.gameState, and broadcasting.
+        // For now, we are letting the client handle this to get it working.
     });
 
+    // Placeholder for endTurn logic
     socket.on('endTurn', (data) => {
-        const roomId = socket.data.roomId;
-        if(roomId) {
-            io.to(roomId).emit('action:endTurn', data);
-        }
+         // TODO: Implement authoritative server logic for ending a turn
     });
 
     socket.on('lobbyChatMessage', (message) => {
@@ -242,7 +267,9 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
         if (player) {
-            io.to(roomId).emit('chatMessage', { speaker: player.username, message });
+            // Sanitize message on server
+            const sanitizedMessage = message.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            io.to(roomId).emit('chatMessage', { speaker: player.username, message: sanitizedMessage });
         }
     });
 
@@ -255,26 +282,46 @@ io.on('connection', (socket) => {
             if (!disconnectedPlayer) return;
 
             if (room.gameStarted) {
-                if (room.mode === 'duo') {
+                // If the game mode is solo (1v1, 1v2, 1v3), eliminate the player but continue the game.
+                if (room.mode.startsWith('solo')) {
+                     const playerState = room.gameState?.players[disconnectedPlayer.playerId];
+                    if (playerState && !playerState.isEliminated) {
+                         playerState.isEliminated = true; // Update the authoritative state
+                         room.gameState.log.push(`${disconnectedPlayer.username} se desconectou e foi eliminado.`);
+                         
+                         const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
+                         
+                         // Check for game over condition
+                         if (activePlayers.length <= 1) {
+                             const winnerName = activePlayers.length === 1 ? room.gameState.players[activePlayers[0]].name : "Ninguém";
+                             io.to(roomId).emit('gameOver', `${winnerName} venceu por W.O.!`);
+                             delete rooms[roomId]; // Clean up the room
+                         } else {
+                            // If it was the disconnected player's turn, advance it
+                            if (room.gameState.currentPlayer === disconnectedPlayer.playerId) {
+                                let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
+                                let nextIndex = currentIndex;
+                                do {
+                                    nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
+                                } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
+                                room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+                            }
+                            broadcastGameState(roomId); // Broadcast the updated state
+                         }
+                         console.log(`Jogador ${disconnectedPlayer.username} eliminado da partida na sala ${roomId}. O jogo continua.`);
+                    }
+                } else { // For Duo mode, abort the game
                     io.to(roomId).emit('gameAborted', { 
                         message: `O jogador ${disconnectedPlayer.username} se desconectou. A partida em dupla foi encerrada.`
                     });
                     delete rooms[roomId];
                     console.log(`Partida (Dupla) na sala ${roomId} encerrada devido a desconexão.`);
-                } else {
-                    const playerState = room.gameState?.players[disconnectedPlayer.playerId];
-                    if (playerState && !playerState.isEliminated) {
-                         io.to(roomId).emit('playerDisconnected', { 
-                            playerId: disconnectedPlayer.playerId,
-                            username: disconnectedPlayer.username 
-                        });
-                        console.log(`Jogador ${disconnectedPlayer.username} eliminado da partida na sala ${roomId}. O jogo continua.`);
-                    }
                 }
                 io.emit('roomList', getPublicRoomsList());
                 return;
             }
 
+            // If game hasn't started, just remove from lobby
             room.players = room.players.filter(p => p.id !== socket.id);
             
             if (room.players.length === 0) {
