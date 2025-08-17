@@ -16,6 +16,9 @@ const io = new Server(server, {
 // --- LÓGICA DE JOGO COMPLETA NO SERVIDOR ---
 const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { value: 6, count: 8 }, { value: 8, count: 6 }, { value: 10, count: 4 }];
 const EFFECT_DECK_CONFIG = [{ name: 'Mais', count: 4 }, { name: 'Menos', count: 4 }, { name: 'Sobe', count: 4 }, { name: 'Desce', count: 4 }, { name: 'Pula', count: 4 }, { name: 'Reversus', count: 4 }, { name: 'Reversus Total', count: 1 }];
+const POSITIVE_EFFECTS = { 'Resto Maior': 'Seu resto nesta rodada é 10.', 'Carta Menor': 'Descarte a menor carta de valor e compre uma nova.', 'Jogo Aberto': 'Seus oponentes jogam com as cartas da mão reveladas.', 'Imunidade': 'Você está imune a cartas "Menos" e "Desce".', 'Desafio': 'Se vencer a rodada sem usar "Mais" ou "Sobe", avance 3 casas.', 'Impulso': 'Se perder a rodada, você ainda avança 1 casa.', 'Troca Justa': 'Você escolhe um oponente: você dá sua carta de valor mais baixa e recebe a mais alta dele.', 'Reversus Total': 'A rodada começa com o efeito da carta "Reversus Total" ativado.' };
+const NEGATIVE_EFFECTS = { 'Resto Menor': 'Seu resto nesta rodada é 2.', 'Carta Maior': 'Descarte a maior carta de valor e compre uma nova.', 'Super Exposto': 'Efeitos de "Menos" e "Desce" são dobrados contra você.', 'Castigo': 'Se perder a rodada, você voltará 3 casas.', 'Parada': 'Se vencer a rodada, você não ganha o bônus de avanço.', 'Jogo Aberto': 'Você joga com as cartas da mão reveladas.', 'Troca Injusta': 'Um oponente aleatório é escolhido: você é forçado a dar sua carta de valor mais alta e receber a mais baixa dele.', 'Total Revesus Nada!': 'Descarte todas as suas cartas de efeito.' };
+
 const MAX_VALUE_CARDS_IN_HAND = 3;
 const MAX_EFFECT_CARDS_IN_HAND = 2;
 const WINNING_POSITION = 10;
@@ -46,10 +49,31 @@ const createDeck = (config, cardType) => {
 
 const generateBoardPaths = () => {
     const paths = [];
+    const allPositiveEffects = Object.keys(POSITIVE_EFFECTS);
+    const allNegativeEffects = Object.keys(NEGATIVE_EFFECTS);
+
     for (let i = 0; i < NUM_PATHS; i++) {
         const spaces = Array.from({ length: BOARD_SIZE }, (_, j) => ({
             id: j + 1, color: 'white', effectName: null, isUsed: false
         }));
+
+        const colorableSpaceIds = Array.from({ length: 7 }, (_, j) => j + 2); // Spaces 2-8
+        shuffle(colorableSpaceIds);
+        const spacesToColor = colorableSpaceIds.slice(0, 3); // 3 colored spaces per path
+
+        spacesToColor.forEach(spaceId => {
+            const space = spaces.find(s => s.id === spaceId);
+            if (space) {
+                const isPositive = Math.random() > 0.5;
+                if (isPositive) {
+                    space.color = 'blue';
+                    space.effectName = shuffle([...allPositiveEffects])[0];
+                } else {
+                    space.color = 'red';
+                    space.effectName = shuffle([...allNegativeEffects])[0];
+                }
+            }
+        });
         paths.push({ id: i, spaces });
     }
     return paths;
@@ -132,6 +156,34 @@ const checkGameEnd = (room) => {
     return false;
 };
 
+const triggerServerFieldEffects = (room) => {
+    const { gameState } = room;
+    gameState.activeFieldEffects = []; // Reset effects at the start of the round
+
+    gameState.playerIdsInGame.forEach(id => {
+        const player = gameState.players[id];
+        if (player.isEliminated || player.pathId === -1) return;
+
+        const path = gameState.boardPaths[player.pathId];
+        if (!path || player.position < 1 || player.position > path.spaces.length) return;
+        
+        const space = path.spaces[player.position - 1];
+
+        if (space && space.effectName && !space.isUsed) {
+            const effectName = space.effectName;
+            const isPositive = POSITIVE_EFFECTS.hasOwnProperty(effectName);
+            // Server-side effects are simplified: they are just flags for the scoring logic.
+            // No complex card swaps or UI interactions.
+            const simpleEffects = ['Resto Maior', 'Resto Menor', 'Imunidade', 'Desafio', 'Impulso', 'Castigo', 'Parada', 'Super Exposto'];
+            if (simpleEffects.includes(effectName)) {
+                gameState.activeFieldEffects.push({ name: effectName, type: isPositive ? 'positive' : 'negative', appliesTo: id });
+                gameState.log.unshift({ type: 'system', message: `${player.name} ativou o efeito de campo: ${effectName}!` });
+                space.isUsed = true; // Mark as used
+            }
+        }
+    });
+};
+
 const startNewRound = (room) => {
     const { gameState } = room;
     gameState.turn++;
@@ -152,6 +204,9 @@ const startNewRound = (room) => {
 
     gameState.reversusTotalActive = false;
     gameState.consecutivePasses = 0;
+    
+    // Trigger field effects at the start of the new round
+    triggerServerFieldEffects(room);
     
     gameState.playerIdsInGame.forEach(id => {
         const player = gameState.players[id];
@@ -180,6 +235,11 @@ const calculateScoresAndEndRound = (room) => {
         if (p.isEliminated) return;
         let score = p.playedCards.value.reduce((sum, card) => sum + card.value, 0);
         let restoValue = p.resto?.value || 0;
+        
+        // Check for field effects
+        if (gameState.activeFieldEffects.some(fe => fe.name === 'Resto Maior' && fe.appliesTo === id)) restoValue = 10;
+        if (gameState.activeFieldEffects.some(fe => fe.name === 'Resto Menor' && fe.appliesTo === id)) restoValue = 2;
+        
         if (p.effects.score === 'Mais') score += restoValue;
         if (p.effects.score === 'Menos') score -= restoValue;
         finalScores[id] = score;
@@ -216,9 +276,27 @@ const calculateScoresAndEndRound = (room) => {
         const p = gameState.players[id];
         if (p.isEliminated) return;
         let movement = 0;
-        if (winners.includes(id)) movement++;
+        const isWinner = winners.includes(id);
+
+        // Standard win/loss effects
+        if (isWinner && !gameState.activeFieldEffects.some(fe => fe.name === 'Parada' && fe.appliesTo === id)) {
+            let advance = 1;
+            if (gameState.activeFieldEffects.some(fe => fe.name === 'Desafio' && fe.appliesTo === id) && p.effects.score !== 'Mais' && p.effects.movement !== 'Sobe') {
+                advance = 3;
+            }
+            movement += advance;
+        }
+        if (!isWinner && winners.length > 0) { // is a loser
+             if (gameState.activeFieldEffects.some(fe => fe.name === 'Castigo' && fe.appliesTo === id)) movement -= 3;
+             if (gameState.activeFieldEffects.some(fe => fe.name === 'Impulso' && fe.appliesTo === id)) movement += 1;
+        }
+        
+        // Card effects
         if (p.effects.movement === 'Sobe') movement++;
-        if (p.effects.movement === 'Desce') movement--;
+        if (p.effects.movement === 'Desce') {
+            let modifier = gameState.activeFieldEffects.some(fe => fe.name === 'Super Exposto' && fe.appliesTo === id) ? 2 : 1;
+            movement -= modifier;
+        }
         if (p.effects.movement === 'Pula' && p.targetPathForPula !== null) p.pathId = p.targetPathForPula;
         if (movement !== 0) p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + movement));
     });
@@ -350,7 +428,7 @@ io.on('connection', (socket) => {
         room.gameState = {
             playerIdsInGame, players: playersState,
             decks: { value: valueDeck, effect: effectDeck },
-            discardPiles: { value: Object.values(drawnCards), effect: [] },
+            discardPiles: { value: [], effect: [] },
             boardPaths: generateBoardPaths(), gamePhase: 'playing', gameMode: room.mode, 
             currentPlayer: startingPlayer, turn: 1, log: initialLog, reversusTotalActive: false,
             consecutivePasses: 0, activeFieldEffects: [], revealedHands: [],
@@ -376,22 +454,54 @@ io.on('connection', (socket) => {
         
         let cardDestinationPlayer = room.gameState.players[targetId];
 
+        // --- ANIMAÇÃO E LÓGICA DE SUBSTITUIÇÃO ---
+        let targetSlotLabel;
+        if (card.type === 'value') {
+            targetSlotLabel = playerState.playedCards.value.length === 0 ? 'Valor 1' : 'Valor 2';
+        } else {
+            const effectNameToApply = options.isIndividualLock ? options.effectNameToApply : card.name;
+            const scoreEffectCategory = ['Mais', 'Menos'];
+            const moveEffectCategory = ['Sobe', 'Desce', 'Pula'];
+            let isScoreEffect = scoreEffectCategory.includes(effectNameToApply) || (card.name === 'Reversus' && options.type === 'score');
+            
+            if (isScoreEffect) {
+                targetSlotLabel = 'Pontuação';
+                const cardToReplaceIndex = cardDestinationPlayer.playedCards.effect.findIndex(c => scoreEffectCategory.includes(c.name) || (c.name === 'Reversus' && c.reversedEffectType === 'score'));
+                if (cardToReplaceIndex > -1) {
+                    const [removedCard] = cardDestinationPlayer.playedCards.effect.splice(cardToReplaceIndex, 1);
+                    room.gameState.discardPiles.effect.push(removedCard);
+                }
+            } else {
+                targetSlotLabel = 'Movimento';
+                const cardToReplaceIndex = cardDestinationPlayer.playedCards.effect.findIndex(c => moveEffectCategory.includes(c.name) || (c.name === 'Reversus' && c.reversedEffectType === 'movement'));
+                if (cardToReplaceIndex > -1) {
+                    const [removedCard] = cardDestinationPlayer.playedCards.effect.splice(cardToReplaceIndex, 1);
+                    room.gameState.discardPiles.effect.push(removedCard);
+                }
+            }
+
+            if (card.name === 'Reversus Total' && !options.isIndividualLock) {
+                targetSlotLabel = 'Reversus T.';
+            }
+        }
+        
+        io.to(roomId).emit('cardPlayedAnimation', {
+            casterId: player.playerId,
+            targetId: targetId,
+            card: card,
+            targetSlotLabel: targetSlotLabel
+        });
+
+        // --- ATUALIZAÇÃO DO ESTADO DO JOGO ---
         if (card.type === 'value') {
             playerState.playedCards.value.push(card);
             playerState.playedValueCardThisTurn = true;
             playerState.nextResto = card;
             room.gameState.log.unshift({ type: 'system', message: `${playerState.name} jogou a carta de valor ${card.name}.` });
         } else {
-            if (options.isIndividualLock) {
-                card.isLocked = true;
-                card.lockedEffect = options.effectNameToApply;
-            }
-            if (card.name === 'Pula' && options.targetPath !== undefined) {
-                cardDestinationPlayer.targetPathForPula = options.targetPath;
-            }
-            if (card.name === 'Reversus') {
-                card.reversedEffectType = options.type;
-            }
+            if (options.isIndividualLock) card.isLocked = true;
+            if (card.name === 'Pula' && options.targetPath !== undefined) cardDestinationPlayer.targetPathForPula = options.targetPath;
+            if (card.name === 'Reversus') card.reversedEffectType = options.type;
             
             cardDestinationPlayer.playedCards.effect.push(card);
             applyEffect(room.gameState, card, targetId, playerState.name, options.type, options);
