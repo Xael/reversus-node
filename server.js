@@ -100,10 +100,12 @@ function broadcastGameState(roomId) {
 
         // Hide opponent hands logic
         Object.keys(personalizedState.players).forEach(pId => {
-            if (pId !== client.playerId && !personalizedState.revealedHands.includes(pId)) {
-                personalizedState.players[pId].hand = personalizedState.players[pId].hand.map(card => ({...card, isHidden: true}));
+            if (pId !== client.playerId && !(personalizedState.revealedHands || []).includes(pId)) {
+                 personalizedState.players[pId].hand = personalizedState.players[pId].hand.map(card => ({...card, isHidden: true}));
             }
         });
+        
+        // This is the key to fixing the perspective.
         personalizedState.myPlayerId = client.playerId;
         io.to(client.id).emit('gameStateUpdate', personalizedState);
     });
@@ -214,6 +216,13 @@ io.on('connection', (socket) => {
             for (let i = 0; i < MAX_EFFECT_CARDS_IN_HAND; i++) playersState[pId].hand.push(effectDeck.pop());
         });
 
+        const logParts = playerIdsInGame.map(id => `${playersState[id].name} sacou ${drawnCards[id].name}`);
+        const initialLog = [
+            `O jogo começou na ${room.name}!`,
+            `Sorteio: ${logParts.join(', ')}.`,
+            `${playersState[startingPlayer].name} começa jogando.`
+        ];
+        
         const initialGameState = {
             playerIdsInGame,
             players: playersState,
@@ -223,7 +232,7 @@ io.on('connection', (socket) => {
             gamePhase: 'playing', gameMode: room.mode, 
             currentPlayer: startingPlayer,
             turn: 1, 
-            log: [`O jogo começou na ${room.name}!`, `${playersState[startingPlayer].name} começa jogando.`],
+            log: initialLog,
             reversusTotalActive: false, consecutivePasses: 0,
             activeFieldEffects: [], 
             revealedHands: [],
@@ -236,7 +245,7 @@ io.on('connection', (socket) => {
 
         room.gameState = initialGameState;
         
-        io.to(roomId).emit('gameStarted', room.gameState); // Send initial state
+        io.to(roomId).emit('gameStarted'); // Signal to clients to setup their game UI
         broadcastGameState(roomId); // Broadcast personalized states
         console.log(`Jogo iniciado na sala ${roomId} no modo ${room.mode}`);
     });
@@ -254,8 +263,8 @@ io.on('connection', (socket) => {
         
         const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
         if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length) {
-            // End of Round logic will be more complex, for now, just advance turn
             // TODO: Implement full end of round scoring and pawn movement
+            // For now, this just advances turn. The full logic is complex.
         }
 
         // Advance to next player
@@ -284,9 +293,10 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
         if (player && room.gameState) {
-            const sanitizedMessage = String(message).replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            room.gameState.log.unshift({ type: 'dialogue', speaker: player.username, message: sanitizedMessage });
-            io.to(roomId).emit('chatMessage', { speaker: player.username, message: sanitizedMessage });
+            // Add to server log for consistency in case of reconnects
+            room.gameState.log.unshift({ type: 'dialogue', speaker: player.username, message });
+            // Emit a specific event, which is more efficient than a full broadcast
+            io.to(roomId).emit('chatMessage', { speaker: player.username, message });
         }
     });
 
@@ -302,14 +312,13 @@ io.on('connection', (socket) => {
         if (room.gameStarted && room.gameState) {
             const playerState = room.gameState.players[disconnectedPlayer.playerId];
             
-            // For Duo mode, abort the game
             if (room.mode === 'duo') {
                 io.to(roomId).emit('gameAborted', { 
                     message: `O jogador ${disconnectedPlayer.username} se desconectou. A partida em dupla foi encerrada.`
                 });
                 console.log(`Partida (Dupla) na sala ${roomId} encerrada devido a desconexão.`);
                 delete rooms[roomId];
-            } else { // For solo modes, eliminate the player but continue the game.
+            } else {
                 if (playerState && !playerState.isEliminated) {
                     playerState.isEliminated = true;
                     room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} se desconectou e foi eliminado.`});
