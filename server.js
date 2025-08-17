@@ -171,11 +171,12 @@ io.on('connection', (socket) => {
         
         const playerCount = room.players.length;
         let isValidStart = false;
+        // CORREÇÃO: Usa '===' para garantir o número exato de jogadores para o modo.
         switch (room.mode) {
-            case 'solo-2p': isValidStart = playerCount >= 2; break;
-            case 'solo-3p': isValidStart = playerCount >= 3; break;
-            case 'solo-4p': isValidStart = playerCount >= 4; break;
-            case 'duo': isValidStart = playerCount >= 4; break;
+            case 'solo-2p': isValidStart = playerCount === 2; break;
+            case 'solo-3p': isValidStart = playerCount === 3; break;
+            case 'solo-4p': isValidStart = playerCount === 4; break;
+            case 'duo': isValidStart = playerCount === 4; break;
         }
 
         if (!isValidStart) {
@@ -215,12 +216,12 @@ io.on('connection', (socket) => {
             for (let i = 0; i < MAX_VALUE_CARDS_IN_HAND; i++) playersState[pId].hand.push(valueDeck.pop());
             for (let i = 0; i < MAX_EFFECT_CARDS_IN_HAND; i++) playersState[pId].hand.push(effectDeck.pop());
         });
-
-        const logParts = playerIdsInGame.map(id => `${playersState[id].name} sacou ${drawnCards[id].name}`);
+        
+        const drawnCardsText = playerIdsInGame.map(id => `${playersState[id].name} (carta ${drawnCards[id].name})`).join(', ');
         const initialLog = [
-            `O jogo começou na ${room.name}!`,
-            `Sorteio: ${logParts.join(', ')}.`,
-            `${playersState[startingPlayer].name} começa jogando.`
+            { type: 'system', message: `O jogo começou na ${room.name}!`},
+            { type: 'system', message: `Sorteio inicial: ${drawnCardsText}.`},
+            { type: 'system', message: `${playersState[startingPlayer].name} tirou a carta mais alta e começa!` }
         ];
         
         const initialGameState = {
@@ -232,7 +233,7 @@ io.on('connection', (socket) => {
             gamePhase: 'playing', gameMode: room.mode, 
             currentPlayer: startingPlayer,
             turn: 1, 
-            log: initialLog,
+            log: initialLog.map(msg => typeof msg === 'string' ? { type: 'system', message: msg } : msg), // Garante que tudo é objeto
             reversusTotalActive: false, consecutivePasses: 0,
             activeFieldEffects: [], 
             revealedHands: [],
@@ -293,10 +294,9 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
         if (player && room.gameState) {
-            // Add to server log for consistency in case of reconnects
-            room.gameState.log.unshift({ type: 'dialogue', speaker: player.username, message });
-            // Emit a specific event, which is more efficient than a full broadcast
-            io.to(roomId).emit('chatMessage', { speaker: player.username, message });
+            const sanitizedMessage = String(message).substring(0, 150); // Sanitize and limit length
+            room.gameState.log.unshift({ type: 'dialogue', speaker: player.username, message: sanitizedMessage });
+            io.to(roomId).emit('chatMessage', { speaker: player.username, message: sanitizedMessage });
         }
     });
 
