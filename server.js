@@ -148,6 +148,7 @@ io.on('connection', (socket) => {
                 gamePhase: 'playing', gameMode: room.mode, currentPlayer: 'player-1',
                 turn: 1, log: [`O jogo começou na ${room.name}!`],
                 reversusTotalActive: false, consecutivePasses: 0,
+                activeFieldEffects: [], // CORREÇÃO: Adiciona a propriedade que faltava
             };
             
             // Lógica de Times para o modo Duplas
@@ -200,14 +201,19 @@ io.on('connection', (socket) => {
             const disconnectedPlayer = room.players.find(p => p.id === socket.id);
             if (!disconnectedPlayer) return;
 
-            room.players = room.players.filter(p => p.id !== socket.id);
-            
+            // Se o jogo já começou, avisa a todos e encerra a sala.
             if (room.gameStarted) {
-                io.to(roomId).emit('playerDisconnected', { 
-                    playerId: disconnectedPlayer.playerId,
-                    message: `${disconnectedPlayer.username} se desconectou.`
+                io.to(roomId).emit('gameAborted', { 
+                    message: `O jogador ${disconnectedPlayer.username} se desconectou. A partida foi encerrada.`
                 });
+                delete rooms[roomId];
+                console.log(`Partida na sala ${roomId} encerrada devido a desconexão.`);
+                io.emit('roomList', getPublicRoomsList());
+                return;
             }
+
+            // Se o jogo não começou, apenas remove o jogador do lobby.
+            room.players = room.players.filter(p => p.id !== socket.id);
             
             if (room.players.length === 0) {
                 delete rooms[roomId];
