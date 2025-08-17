@@ -1,169 +1,38 @@
-// server.js - Versão Simplificada e Estável
+// server.js --- MODO DE DIAGNÓSTICO ---
+// O objetivo deste arquivo é confirmar se a conexão entre o EasyPanel e seu container Node está funcionando.
 const express = require('express');
-const http = require('http');
-const { Server } = require("socket.io");
-
 const app = express();
+const http = require('http');
 const server = http.createServer(app);
 
-const io = new Server(server, {
-  cors: {
-    origin: ["https://reversus-game.dke42d.easypanel.host", "https://reversus.online"],
-    methods: ["GET", "POST"]
-  }
-});
-
-// Rota de verificação de saúde para garantir que o servidor está rodando.
-app.get('/', (req, res) => {
-  res.status(200).send('Reversus PvP Server is running and healthy!');
-});
-
-// Armazenamento em memória para salas.
-const rooms = {};
-
-function getRoomsList() {
-    return Object.values(rooms)
-        .filter(r => !r.gameStarted) // Apenas salas que não começaram
-        .map(r => ({
-            id: r.id,
-            name: r.name,
-            playerCount: r.players.length,
-            mode: r.mode || '4 Jogadores',
-        }));
-}
-
-io.on('connection', (socket) => {
-    console.log(`Usuário conectado: ${socket.id}`);
-    
-    socket.emit('connected', { clientId: socket.id });
-
-    // --- Gerenciamento de Lobby ---
-    socket.on('listRooms', () => {
-        socket.emit('roomList', getRoomsList());
-    });
-
-    socket.on('createRoom', () => {
-        const username = socket.data.username || 'Anônimo';
-        const roomId = `room-${Date.now()}`;
-        rooms[roomId] = {
-            id: roomId,
-            name: `Sala de ${username}`,
-            hostId: socket.id,
-            players: [],
-            gameStarted: false,
-            mode: 'solo-4p',
-        };
-        console.log(`Sala criada: ${roomId} por ${username}`);
-        io.emit('roomList', getRoomsList());
-        socket.emit('roomCreated', roomId);
-    });
-
-    socket.on('joinRoom', (roomId) => {
-        const room = rooms[roomId];
-        const username = socket.data.username;
-
-        if (room && room.players.length < 4) {
-            socket.join(roomId);
-            socket.data.roomId = roomId;
-
-            const newPlayer = {
-                id: socket.id,
-                username: username,
-                playerId: `player-${room.players.length + 1}`
-            };
-            room.players.push(newPlayer);
-
-            console.log(`${username} entrou na sala ${roomId} como ${newPlayer.playerId}`);
-            
-            const roomDataForLobby = {
-                id: room.id,
-                name: room.name,
-                hostId: room.hostId,
-                players: room.players.map(p => ({ id: p.id, username: p.username })),
-                mode: room.mode
-            };
-
-            io.to(roomId).emit('lobbyUpdate', roomDataForLobby);
-            io.emit('roomList', getRoomsList());
-        } else {
-            socket.emit('error', 'Sala cheia ou não existe.');
-        }
-    });
-    
-    socket.on('leaveRoom', () => {
-        const roomId = socket.data.roomId;
-        if (!roomId || !rooms[roomId]) return;
-
-        // Remove o jogador da sala
-        rooms[roomId].players = rooms[roomId].players.filter(p => p.id !== socket.id);
-        socket.leave(roomId);
-        console.log(`${socket.data.username} saiu da sala ${roomId}`);
-
-        if (rooms[roomId].players.length === 0) {
-            // Se a sala estiver vazia, delete-a
-            delete rooms[roomId];
-            console.log(`Sala ${roomId} deletada.`);
-        } else {
-            // Se o host saiu, elege um novo host
-            if (rooms[roomId].hostId === socket.id) {
-                rooms[roomId].hostId = rooms[roomId].players[0].id;
-                 console.log(`Novo host para a sala ${roomId}: ${rooms[roomId].players[0].username}`);
-            }
-            // Atualiza o lobby para os jogadores restantes
-             const roomDataForLobby = {
-                id: rooms[roomId].id,
-                name: rooms[roomId].name,
-                hostId: rooms[roomId].hostId,
-                players: rooms[roomId].players.map(p => ({ id: p.id, username: p.username })),
-                mode: rooms[roomId].mode
-            };
-            io.to(roomId).emit('lobbyUpdate', roomDataForLobby);
-        }
-        io.emit('roomList', getRoomsList());
-    });
-
-    socket.on('lobbyChatMessage', (message) => {
-        const roomId = socket.data.roomId;
-        const username = socket.data.username;
-        if (roomId && username && rooms[roomId]) {
-            io.to(roomId).emit('lobbyChatMessage', { speaker: username, message });
-        }
-    });
-
-    // --- Ações do Jogo ---
-    // O servidor agora apenas retransmite as ações para os outros clientes.
-    // O cliente que envia a ação já executa a lógica localmente.
-    
-    socket.on('playCard', (data) => {
-        const roomId = socket.data.roomId;
-        // Retransmite a ação para todos os OUTROS jogadores na sala
-        if (roomId) {
-            socket.to(roomId).emit('action:playCard', data);
-        }
-    });
-
-    socket.on('endTurn', (data) => {
-        const roomId = socket.data.roomId;
-        if (roomId) {
-            socket.to(roomId).emit('action:endTurn', data);
-        }
-    });
-
-    // --- Desconexão ---
-    socket.on('disconnect', () => {
-        console.log(`Usuário desconectado: ${socket.id}`);
-        // A lógica de 'leaveRoom' já lida com a limpeza
-        const event = {
-            target: {
-                id: 'pvp-lobby-close-button'
-            }
-        };
-        socket.emit('leaveRoom', event);
-    });
-});
-
-// CORREÇÃO FINAL: Usar a porta do ambiente E escutar em '0.0.0.0'.
+// Este é o passo mais importante: Descobrir em qual porta o EasyPanel espera que a gente escute.
 const PORT = process.env.PORT || 3000;
+
+// Middleware para logar TODAS as requisições que chegam ao servidor.
+// Se você não vir esta mensagem nos logs, o EasyPanel não está enviando o tráfego para o lugar certo.
+app.use((req, res, next) => {
+  console.log(`[LOG DE DIAGNÓSTICO] Tentativa de requisição recebida: ${req.method} ${req.url} do IP ${req.ip}`);
+  next();
+});
+
+// Rota de teste principal.
+app.get('/', (req, res) => {
+  // Se você vir esta mensagem no log, a conexão do EasyPanel com o Node está FUNCIONANDO.
+  console.log(`[LOG DE DIAGNÓSTICO] SUCESSO! A rota '/' foi acessada.`);
+  res.status(200).send(`
+    <h1>Servidor de Diagnóstico Reversus está Online!</h1>
+    <p>Se você está vendo esta página, a conexão entre o proxy do EasyPanel e o seu servidor Node está funcionando perfeitamente!</p>
+    <p>O servidor está escutando na porta interna: <strong>${PORT}</strong></p>
+    <p><b>Próximo Passo:</b> Agora você pode restaurar o arquivo 'server.js' original do jogo. O problema de conexão foi resolvido.</p>
+  `);
+});
+
+// Escuta na porta e no host corretos para ambientes de contêiner.
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Servidor PvP está rodando na porta ${PORT}`);
+  console.log('--- SERVIDOR EM MODO DE DIAGNÓSTICO ---');
+  // Este log é crucial para saber a porta interna que o EasyPanel precisa usar.
+  console.log(`[LOG DE DIAGNÓSTICO] O servidor está escutando na porta interna: ${PORT}`);
+  console.log('Agora, acesse https://reversus-node.dke42d.easypanel.host/ no seu navegador e verifique os logs novamente.');
+  console.log('Se nenhuma mensagem nova aparecer, verifique o mapeamento de portas no EasyPanel.');
+  console.log('------------------------------------');
 });
