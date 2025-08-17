@@ -1,15 +1,11 @@
-// server.js
+// server.js - Versão Simplificada e Estável
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
-// O 'path' não é mais necessário
 
 const app = express();
 const server = http.createServer(app);
 
-// --- CORREÇÃO DE CORS ---
-// A lista de origens permitidas já incluía o domínio correto,
-// mas mantemos a configuração explícita para garantir.
 const io = new Server(server, {
   cors: {
     origin: ["https://reversus-game.dke42d.easypanel.host", "https://reversus.online"],
@@ -17,276 +13,157 @@ const io = new Server(server, {
   }
 });
 
-// --- Rota de Verificação de Saúde (Health Check) ---
-// Substituímos o código que servia arquivos (e causava o crash)
-// por uma resposta simples para confirmar que o servidor está no ar.
+// Rota de verificação de saúde para garantir que o servidor está rodando.
 app.get('/', (req, res) => {
   res.status(200).send('Reversus PvP Server is running and healthy!');
 });
 
-
-// --- Lógica do Jogo no Servidor (sem alterações aqui) ---
-const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { value: 6, count: 8 }, { value: 8, count: 6 }, { value: 10, count: 4 }];
-const EFFECT_DECK_CONFIG = [{ name: 'Mais', count: 4 }, { name: 'Menos', count: 4 }, { name: 'Sobe', count: 4 }, { name: 'Desce', count: 4 }, { name: 'Pula', count: 4 }, { name: 'Reversus', count: 4 }, { name: 'Reversus Total', count: 1 }];
-const MASTER_PLAYER_IDS = ['player-1', 'player-2', 'player-3', 'player-4'];
-const WINNING_POSITION = 10;
-const MAX_VALUE_CARDS_IN_HAND = 3;
-const MAX_EFFECT_CARDS_IN_HAND = 2;
-
-
-const shuffle = (array) => {
-    for (let i = array.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [array[i], array[j]] = [array[j], array[i]];
-    }
-    return array;
-};
-
-const createDeck = (config, cardType) => {
-    let idCounter = 0;
-    return config.flatMap(item => Array.from({ length: item.count }, () => {
-        const cardData = 'value' in item ? { name: item.value, value: item.value } : { name: item.name };
-        return { id: Date.now() + Math.random() + idCounter++, type: cardType, ...cardData };
-    }));
-};
-
-const generateBoardPaths = () => {
-    const paths = [];
-    for (let i = 0; i < 6; i++) {
-        const spaces = Array.from({ length: 9 }, (_, j) => ({
-            id: j + 1, color: 'white', effectName: null, isUsed: false
-        }));
-        paths.push({ id: i, spaces });
-    }
-    return paths;
-};
-// --- Fim da Lógica do Jogo ---
-
-
-// Armazenamento em memória para salas e estados de jogo
+// Armazenamento em memória para salas.
 const rooms = {};
 
 function getRoomsList() {
     return Object.values(rooms)
-        .filter(r => !r.gameStarted)
+        .filter(r => !r.gameStarted) // Apenas salas que não começaram
         .map(r => ({
             id: r.id,
             name: r.name,
             playerCount: r.players.length,
-            mode: r.mode,
+            mode: r.mode || '4 Jogadores',
         }));
 }
 
-function sendStateToPlayers(roomId) {
-    const room = rooms[roomId];
-    if (!room || !room.gameState) return;
-
-    room.players.forEach(client => {
-        const personalizedState = {
-            ...room.gameState,
-            players: {},
-            myPlayerId: client.playerId,
-        };
-
-        // Cria uma visão personalizada para cada jogador
-        for (const pId in room.gameState.players) {
-            const player = room.gameState.players[pId];
-            const isMe = pId === client.playerId;
-
-            personalizedState.players[pId] = {
-                ...player,
-                hand: isMe ? player.hand : player.hand.map(card => ({ ...card, isHidden: true })),
-            };
-        }
-
-        io.to(client.id).emit('gameStateUpdate', personalizedState);
-    });
-}
-
-
 io.on('connection', (socket) => {
-    console.log(`User connected: ${socket.id}`);
+    console.log(`Usuário conectado: ${socket.id}`);
     
     socket.emit('connected', { clientId: socket.id });
 
+    // --- Gerenciamento de Lobby ---
     socket.on('listRooms', () => {
         socket.emit('roomList', getRoomsList());
     });
 
-    socket.on('createRoom', (username) => {
+    socket.on('createRoom', () => {
+        const username = socket.data.username || 'Anônimo';
         const roomId = `room-${Date.now()}`;
-        const roomName = `Sala de ${username}`;
         rooms[roomId] = {
             id: roomId,
-            name: roomName,
+            name: `Sala de ${username}`,
             hostId: socket.id,
             players: [],
-            gameState: null,
             gameStarted: false,
-            mode: 'solo-4p', // Modo padrão
+            mode: 'solo-4p',
         };
-        console.log(`Room created: ${roomId}`);
+        console.log(`Sala criada: ${roomId} por ${username}`);
         io.emit('roomList', getRoomsList());
         socket.emit('roomCreated', roomId);
     });
 
-    socket.on('joinRoom', ({ roomId, username }) => {
+    socket.on('joinRoom', (roomId) => {
         const room = rooms[roomId];
+        const username = socket.data.username;
+
         if (room && room.players.length < 4) {
-            const newPlayer = { id: socket.id, username, playerId: `player-${room.players.length + 1}` };
-            room.players.push(newPlayer);
             socket.join(roomId);
             socket.data.roomId = roomId;
 
-            console.log(`${username} joined ${roomId}`);
+            const newPlayer = {
+                id: socket.id,
+                username: username,
+                playerId: `player-${room.players.length + 1}`
+            };
+            room.players.push(newPlayer);
+
+            console.log(`${username} entrou na sala ${roomId} como ${newPlayer.playerId}`);
             
-            const roomData = {
+            const roomDataForLobby = {
                 id: room.id,
                 name: room.name,
                 hostId: room.hostId,
-                players: room.players.map(p => ({ id: p.id, username: p.username, playerId: p.playerId })),
-                mode: room.mode,
+                players: room.players.map(p => ({ id: p.id, username: p.username })),
+                mode: room.mode
             };
 
-            io.to(roomId).emit('lobbyUpdate', roomData);
+            io.to(roomId).emit('lobbyUpdate', roomDataForLobby);
             io.emit('roomList', getRoomsList());
         } else {
             socket.emit('error', 'Sala cheia ou não existe.');
         }
     });
-
-    socket.on('startGame', (roomId) => {
-        const room = rooms[roomId];
-        if (room && room.hostId === socket.id && !room.gameStarted) {
-             room.gameStarted = true;
-             io.emit('roomList', getRoomsList());
-
-             // --- Inicializa o Estado do Jogo no Servidor ---
-             const playerIdsInGame = room.players.map(p => p.playerId);
-             const players = {};
-             room.players.forEach(p_client => {
-                 players[p_client.playerId] = {
-                     id: p_client.playerId,
-                     name: p_client.username,
-                     isHuman: true,
-                     hand: [],
-                     // ... outras propriedades iniciais do jogador
-                     pathId: playerIdsInGame.indexOf(p_client.playerId),
-                     position: 1,
-                     resto: null,
-                     nextResto: null,
-                     effects: { score: null, movement: null },
-                     playedCards: { value: [], effect: [] },
-                     playedValueCardThisTurn: false,
-                     liveScore: 0,
-                 }
-             });
-
-             const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
-             const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
-
-             // Distribui as cartas
-             Object.values(players).forEach(p => {
-                 for(let i=0; i < MAX_VALUE_CARDS_IN_HAND; i++) p.hand.push(valueDeck.pop());
-                 for(let i=0; i < MAX_EFFECT_CARDS_IN_HAND; i++) p.hand.push(effectDeck.pop());
-             });
-             
-             room.gameState = {
-                players,
-                playerIdsInGame,
-                decks: { value: valueDeck, effect: effectDeck },
-                discardPiles: { value: [], effect: [] },
-                boardPaths: generateBoardPaths(),
-                gamePhase: 'playing',
-                currentPlayer: 'player-1',
-                turn: 1,
-                log: [`O jogo começou na ${room.name}!`],
-                // ... outras propriedades iniciais do estado do jogo
-             };
-             
-             io.to(roomId).emit('gameStarted');
-             sendStateToPlayers(roomId);
-        }
-    });
     
-     socket.on('playCard', (data) => {
+    socket.on('leaveRoom', () => {
         const roomId = socket.data.roomId;
-        const room = rooms[roomId];
-        const state = room.gameState;
-        const player = state.players[data.playerId];
-        const card = player.hand.find(c => c.id === data.cardId);
+        if (!roomId || !rooms[roomId]) return;
 
-        // TODO: Adicionar validação robusta aqui (é o turno dele? a jogada é legal?)
+        // Remove o jogador da sala
+        rooms[roomId].players = rooms[roomId].players.filter(p => p.id !== socket.id);
+        socket.leave(roomId);
+        console.log(`${socket.data.username} saiu da sala ${roomId}`);
 
-        // Lógica simples por enquanto: move a carta da mão para jogada
-        const cardIndex = player.hand.findIndex(c => c.id === data.cardId);
-        if (cardIndex > -1) {
-            player.hand.splice(cardIndex, 1);
-            if(card.type === 'value') {
-                player.playedCards.value.push(card);
-            } else {
-                 state.players[data.targetId].playedCards.effect.push(card);
+        if (rooms[roomId].players.length === 0) {
+            // Se a sala estiver vazia, delete-a
+            delete rooms[roomId];
+            console.log(`Sala ${roomId} deletada.`);
+        } else {
+            // Se o host saiu, elege um novo host
+            if (rooms[roomId].hostId === socket.id) {
+                rooms[roomId].hostId = rooms[roomId].players[0].id;
+                 console.log(`Novo host para a sala ${roomId}: ${rooms[roomId].players[0].username}`);
             }
-             state.log.unshift(`${player.name} jogou a carta ${card.name}.`);
+            // Atualiza o lobby para os jogadores restantes
+             const roomDataForLobby = {
+                id: rooms[roomId].id,
+                name: rooms[roomId].name,
+                hostId: rooms[roomId].hostId,
+                players: rooms[roomId].players.map(p => ({ id: p.id, username: p.username })),
+                mode: rooms[roomId].mode
+            };
+            io.to(roomId).emit('lobbyUpdate', roomDataForLobby);
         }
-        
-        sendStateToPlayers(roomId);
+        io.emit('roomList', getRoomsList());
     });
 
-    socket.on('endTurn', (playerId) => {
+    socket.on('lobbyChatMessage', (message) => {
         const roomId = socket.data.roomId;
-        const room = rooms[roomId];
-        const state = room.gameState;
-        
-        // TODO: Adicionar validação (é o turno dele?)
-
-        const currentIndex = state.playerIdsInGame.indexOf(playerId);
-        const nextIndex = (currentIndex + 1) % state.playerIdsInGame.length;
-        state.currentPlayer = state.playerIdsInGame[nextIndex];
-        
-        state.log.unshift(`${state.players[playerId].name} passou o turno.`);
-
-        sendStateToPlayers(roomId);
+        const username = socket.data.username;
+        if (roomId && username && rooms[roomId]) {
+            io.to(roomId).emit('lobbyChatMessage', { speaker: username, message });
+        }
     });
+
+    // --- Ações do Jogo ---
+    // O servidor agora apenas retransmite as ações para os outros clientes.
+    // O cliente que envia a ação já executa a lógica localmente.
     
-    socket.on('chatMessage', (message) => {
+    socket.on('playCard', (data) => {
         const roomId = socket.data.roomId;
-        const room = rooms[roomId];
-        const player = room.players.find(p => p.id === socket.id);
-        if(player) {
-            io.to(roomId).emit('chatMessage', { speaker: player.username, message });
+        // Retransmite a ação para todos os OUTROS jogadores na sala
+        if (roomId) {
+            socket.to(roomId).emit('action:playCard', data);
         }
     });
 
+    socket.on('endTurn', (data) => {
+        const roomId = socket.data.roomId;
+        if (roomId) {
+            socket.to(roomId).emit('action:endTurn', data);
+        }
+    });
 
+    // --- Desconexão ---
     socket.on('disconnect', () => {
-        console.log(`User disconnected: ${socket.id}`);
-        const roomId = socket.data.roomId;
-        if(roomId && rooms[roomId]) {
-            rooms[roomId].players = rooms[roomId].players.filter(p => p.id !== socket.id);
-            if (rooms[roomId].players.length === 0) {
-                delete rooms[roomId];
-                console.log(`Room deleted: ${roomId}`);
-            } else {
-                // Se o anfitrião desconectar, atribui um novo
-                if (rooms[roomId].hostId === socket.id) {
-                    rooms[roomId].hostId = rooms[roomId].players[0].id;
-                }
-                const roomData = {
-                    id: rooms[roomId].id,
-                    name: rooms[roomId].name,
-                    hostId: rooms[roomId].hostId,
-                    players: rooms[roomId].players.map(p => ({ id: p.id, username: p.username, playerId: p.playerId })),
-                    mode: rooms[roomId].mode,
-                };
-                 io.to(roomId).emit('lobbyUpdate', roomData);
+        console.log(`Usuário desconectado: ${socket.id}`);
+        // A lógica de 'leaveRoom' já lida com a limpeza
+        const event = {
+            target: {
+                id: 'pvp-lobby-close-button'
             }
-             io.emit('roomList', getRoomsList());
-        }
+        };
+        socket.emit('leaveRoom', event);
     });
 });
 
+// CORREÇÃO: Usar a porta fornecida pelo ambiente (EasyPanel) ou 3000 como padrão.
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`Servidor PvP está rodando na porta ${PORT}`);
 });
