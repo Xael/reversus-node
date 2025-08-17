@@ -6,7 +6,6 @@ const { Server } = require("socket.io");
 const app = express();
 const server = http.createServer(app);
 
-// Configuração de CORS para permitir conexões do seu domínio de jogo
 const io = new Server(server, {
   cors: {
     origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host", "http://localhost:8080"],
@@ -65,7 +64,6 @@ const dealCard = (gameState, deckType) => {
     return gameState.decks[deckType].pop();
 };
 
-// Armazenamento em memória para as salas de jogo
 const rooms = {};
 
 // --- FUNÇÕES HELPER DO SERVIDOR ---
@@ -90,7 +88,6 @@ function getPublicRoomsList() {
         }));
 }
 
-// Envia o estado do jogo para todos na sala, personalizando para cada jogador
 function broadcastGameState(roomId) {
     const room = rooms[roomId];
     if (!room || !room.gameState) return;
@@ -98,8 +95,16 @@ function broadcastGameState(roomId) {
     room.players.forEach(client => {
         const personalizedState = {
             ...room.gameState,
-            myPlayerId: client.playerId,
+            players: JSON.parse(JSON.stringify(room.gameState.players)) // Deep copy
         };
+
+        // Hide opponent hands logic
+        Object.keys(personalizedState.players).forEach(pId => {
+            if (pId !== client.playerId && !personalizedState.revealedHands.includes(pId)) {
+                personalizedState.players[pId].hand = personalizedState.players[pId].hand.map(card => ({...card, isHidden: true}));
+            }
+        });
+        personalizedState.myPlayerId = client.playerId;
         io.to(client.id).emit('gameStateUpdate', personalizedState);
     });
 }
@@ -165,10 +170,10 @@ io.on('connection', (socket) => {
         const playerCount = room.players.length;
         let isValidStart = false;
         switch (room.mode) {
-            case 'solo-2p': isValidStart = playerCount === 2; break;
-            case 'solo-3p': isValidStart = playerCount === 3; break;
-            case 'solo-4p': isValidStart = playerCount === 4; break;
-            case 'duo': isValidStart = playerCount === 4; break;
+            case 'solo-2p': isValidStart = playerCount >= 2; break;
+            case 'solo-3p': isValidStart = playerCount >= 3; break;
+            case 'solo-4p': isValidStart = playerCount >= 4; break;
+            case 'duo': isValidStart = playerCount >= 4; break;
         }
 
         if (!isValidStart) {
@@ -230,27 +235,39 @@ io.on('connection', (socket) => {
         }
 
         room.gameState = initialGameState;
-
-        playerClients.forEach(client => {
-            const personalizedState = {
-                ...initialGameState,
-                myPlayerId: client.playerId,
-            };
-            io.to(client.id).emit('gameStarted', personalizedState);
-        });
+        
+        io.to(roomId).emit('gameStarted', room.gameState); // Send initial state
+        broadcastGameState(roomId); // Broadcast personalized states
         console.log(`Jogo iniciado na sala ${roomId} no modo ${room.mode}`);
     });
     
-    // Placeholder for playCard logic
-    socket.on('playCard', (data) => {
-        // TODO: Implement authoritative server logic for playing a card
-        // This would involve validating the move, updating room.gameState, and broadcasting.
-        // For now, we are letting the client handle this to get it working.
-    });
+    // Server handles the end turn logic now
+    socket.on('endTurn', () => {
+        const roomId = socket.data.roomId;
+        const room = rooms[roomId];
+        const player = room?.players.find(p => p.id === socket.id);
+        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) {
+            return; 
+        }
 
-    // Placeholder for endTurn logic
-    socket.on('endTurn', (data) => {
-         // TODO: Implement authoritative server logic for ending a turn
+        room.gameState.consecutivePasses++;
+        
+        const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
+        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length) {
+            // End of Round logic will be more complex, for now, just advance turn
+            // TODO: Implement full end of round scoring and pawn movement
+        }
+
+        // Advance to next player
+        let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
+        let nextIndex = currentIndex;
+        do {
+            nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
+        } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
+        room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+        room.gameState.players[room.gameState.currentPlayer].playedValueCardThisTurn = false;
+        
+        broadcastGameState(roomId);
     });
 
     socket.on('lobbyChatMessage', (message) => {
@@ -266,9 +283,9 @@ io.on('connection', (socket) => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
-        if (player) {
-            // Sanitize message on server
-            const sanitizedMessage = message.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        if (player && room.gameState) {
+            const sanitizedMessage = String(message).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            room.gameState.log.unshift({ type: 'dialogue', speaker: player.username, message: sanitizedMessage });
             io.to(roomId).emit('chatMessage', { speaker: player.username, message: sanitizedMessage });
         }
     });
@@ -276,65 +293,60 @@ io.on('connection', (socket) => {
     const handleDisconnect = () => {
         console.log(`Jogador desconectado: ${socket.id}`);
         const roomId = socket.data.roomId;
-        if (roomId && rooms[roomId]) {
-            const room = rooms[roomId];
-            const disconnectedPlayer = room.players.find(p => p.id === socket.id);
-            if (!disconnectedPlayer) return;
+        if (!roomId || !rooms[roomId]) return;
 
-            if (room.gameStarted) {
-                // If the game mode is solo (1v1, 1v2, 1v3), eliminate the player but continue the game.
-                if (room.mode.startsWith('solo')) {
-                     const playerState = room.gameState?.players[disconnectedPlayer.playerId];
-                    if (playerState && !playerState.isEliminated) {
-                         playerState.isEliminated = true; // Update the authoritative state
-                         room.gameState.log.push(`${disconnectedPlayer.username} se desconectou e foi eliminado.`);
-                         
-                         const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
-                         
-                         // Check for game over condition
-                         if (activePlayers.length <= 1) {
-                             const winnerName = activePlayers.length === 1 ? room.gameState.players[activePlayers[0]].name : "Ninguém";
-                             io.to(roomId).emit('gameOver', `${winnerName} venceu por W.O.!`);
-                             delete rooms[roomId]; // Clean up the room
-                         } else {
-                            // If it was the disconnected player's turn, advance it
-                            if (room.gameState.currentPlayer === disconnectedPlayer.playerId) {
-                                let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
-                                let nextIndex = currentIndex;
-                                do {
-                                    nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
-                                } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
-                                room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
-                            }
-                            broadcastGameState(roomId); // Broadcast the updated state
-                         }
-                         console.log(`Jogador ${disconnectedPlayer.username} eliminado da partida na sala ${roomId}. O jogo continua.`);
-                    }
-                } else { // For Duo mode, abort the game
-                    io.to(roomId).emit('gameAborted', { 
-                        message: `O jogador ${disconnectedPlayer.username} se desconectou. A partida em dupla foi encerrada.`
-                    });
-                    delete rooms[roomId];
-                    console.log(`Partida (Dupla) na sala ${roomId} encerrada devido a desconexão.`);
-                }
-                io.emit('roomList', getPublicRoomsList());
-                return;
-            }
+        const room = rooms[roomId];
+        const disconnectedPlayer = room.players.find(p => p.id === socket.id);
+        if (!disconnectedPlayer) return;
 
-            // If game hasn't started, just remove from lobby
-            room.players = room.players.filter(p => p.id !== socket.id);
+        if (room.gameStarted && room.gameState) {
+            const playerState = room.gameState.players[disconnectedPlayer.playerId];
             
-            if (room.players.length === 0) {
+            // For Duo mode, abort the game
+            if (room.mode === 'duo') {
+                io.to(roomId).emit('gameAborted', { 
+                    message: `O jogador ${disconnectedPlayer.username} se desconectou. A partida em dupla foi encerrada.`
+                });
+                console.log(`Partida (Dupla) na sala ${roomId} encerrada devido a desconexão.`);
                 delete rooms[roomId];
+            } else { // For solo modes, eliminate the player but continue the game.
+                if (playerState && !playerState.isEliminated) {
+                    playerState.isEliminated = true;
+                    room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} se desconectou e foi eliminado.`});
+                    
+                    const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
+                    
+                    if (activePlayers.length <= 1) {
+                        const winnerName = activePlayers.length === 1 ? room.gameState.players[activePlayers[0]].name : "Ninguém";
+                        io.to(roomId).emit('gameOver', `${winnerName} venceu por W.O.!`);
+                        delete rooms[roomId];
+                    } else {
+                       if (room.gameState.currentPlayer === disconnectedPlayer.playerId) {
+                           let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
+                           let nextIndex = currentIndex;
+                           do {
+                               nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
+                           } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
+                           room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+                       }
+                       broadcastGameState(roomId);
+                       console.log(`Jogador ${disconnectedPlayer.username} eliminado da partida na sala ${roomId}. O jogo continua.`);
+                    }
+                }
+            }
+        } else { // If game hasn't started, just remove from lobby
+            room.players = room.players.filter(p => p.id !== socket.id);
+            if (room.players.length === 0) {
                 console.log(`Sala vazia e deletada: ${roomId}`);
+                delete rooms[roomId];
             } else {
                 if (room.hostId === socket.id) {
-                    room.hostId = room.players[0].id;
+                    room.hostId = room.players[0].id; // Assign a new host
                 }
                 io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
             }
-            io.emit('roomList', getPublicRoomsList());
         }
+        io.emit('roomList', getPublicRoomsList());
     };
 
     socket.on('leaveRoom', handleDisconnect);
