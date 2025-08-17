@@ -21,6 +21,8 @@ const MAX_VALUE_CARDS_IN_HAND = 3;
 const MAX_EFFECT_CARDS_IN_HAND = 2;
 const TEAM_A_IDS = ['player-1', 'player-3'];
 const TEAM_B_IDS = ['player-2', 'player-4'];
+const NUM_PATHS = 6;
+const BOARD_SIZE = 9;
 
 
 const shuffle = (array) => {
@@ -37,6 +39,17 @@ const createDeck = (config, cardType) => {
         const cardData = 'value' in item ? { name: item.value, value: item.value } : { name: item.name };
         return { id: Date.now() + Math.random() + idCounter++, type: cardType, ...cardData };
     }));
+};
+
+const generateBoardPaths = () => {
+    const paths = [];
+    for (let i = 0; i < NUM_PATHS; i++) {
+        const spaces = Array.from({ length: BOARD_SIZE }, (_, j) => ({
+            id: j + 1, color: 'white', effectName: null, isUsed: false
+        }));
+        paths.push({ id: i, spaces });
+    }
+    return paths;
 };
 // --- Fim da Lógica de Jogo Reutilizada ---
 
@@ -120,7 +133,6 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         if (!room || room.hostId !== socket.id || room.gameStarted) return;
         
-        // Validação do lado do servidor para garantir que o número de jogadores é correto para o modo
         const playerCount = room.players.length;
         let isValidStart = false;
         switch (room.mode) {
@@ -139,10 +151,22 @@ io.on('connection', (socket) => {
         room.gameStarted = true;
         io.emit('roomList', getPublicRoomsList());
 
+        // --- O SERVIDOR É A FONTE DA VERDADE ---
         const playerClients = room.players;
         const playerIdsInGame = playerClients.map(p => p.playerId);
         const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
         const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
+
+        // 1. Sorteio inicial para decidir quem começa
+        const drawnCards = {};
+        playerIdsInGame.forEach(id => { drawnCards[id] = valueDeck.pop(); });
+        const sortedPlayers = [...playerIdsInGame].sort((a, b) => (drawnCards[b]?.value || 0) - (drawnCards[a]?.value || 0));
+        let startingPlayer = sortedPlayers[0];
+        // Lida com empates no sorteio
+        if (sortedPlayers.length > 1 && drawnCards[sortedPlayers[0]]?.value === drawnCards[sortedPlayers[1]]?.value) {
+            startingPlayer = sortedPlayers[Math.floor(Math.random() * sortedPlayers.length)];
+        }
+
 
         const playersState = {};
         playerClients.forEach(clientPlayer => {
@@ -150,7 +174,8 @@ io.on('connection', (socket) => {
             playersState[pId] = {
                 id: pId, name: clientPlayer.username, isHuman: true,
                 hand: [], pathId: playerIdsInGame.indexOf(pId), position: 1,
-                resto: null, nextResto: null, effects: { score: null, movement: null },
+                resto: drawnCards[pId], // 2. Resto inicial definido pelo sorteio
+                nextResto: null, effects: { score: null, movement: null },
                 playedCards: { value: [], effect: [] }, playedValueCardThisTurn: false,
                 liveScore: 0, status: 'neutral', isEliminated: false,
             };
@@ -161,36 +186,35 @@ io.on('connection', (socket) => {
         const initialGameState = {
             players: playersState, playerIdsInGame,
             decks: { value: valueDeck, effect: effectDeck },
-            discardPiles: { value: [], effect: [] },
-            gamePhase: 'playing', gameMode: room.mode, currentPlayer: 'player-1',
-            turn: 1, log: [`O jogo começou na ${room.name}!`],
+            discardPiles: { value: Object.values(drawnCards), effect: [] },
+            boardPaths: generateBoardPaths(), // 3. Tabuleiro é gerado no servidor
+            gamePhase: 'playing', gameMode: room.mode, 
+            currentPlayer: startingPlayer, // 4. Jogador inicial definido pelo sorteio
+            turn: 1, 
+            log: [`O jogo começou na ${room.name}!`, `${playersState[startingPlayer].name} começa jogando.`],
             reversusTotalActive: false, consecutivePasses: 0,
-            activeFieldEffects: [], // CORREÇÃO: Propriedade que faltava
-            revealedHands: [], // CORREÇÃO CRÍTICA: Adiciona a propriedade que faltava.
+            activeFieldEffects: [], 
+            revealedHands: [],
         };
         
-        // Lógica de Times para o modo Duplas
         if (room.mode === 'duo') {
             initialGameState.teamA = TEAM_A_IDS.filter(id => playerIdsInGame.includes(id));
             initialGameState.teamB = TEAM_B_IDS.filter(id => playerIdsInGame.includes(id));
         }
 
-        // Envia um estado de jogo personalizado para cada jogador
         playerClients.forEach(client => {
             const personalizedState = {
                 ...initialGameState,
-                myPlayerId: client.playerId, // Informa ao cliente qual jogador ele é
+                myPlayerId: client.playerId,
             };
             io.to(client.id).emit('gameStarted', personalizedState);
         });
         console.log(`Jogo iniciado na sala ${roomId} no modo ${room.mode}`);
     });
     
-    // Retransmissores de Ações (Action Relays)
     socket.on('playCard', (data) => {
         const roomId = socket.data.roomId;
         if(roomId) {
-            // Retransmite para todos os outros na sala, incluindo o remetente para manter a consistência do estado
             io.to(roomId).emit('action:playCard', data);
         }
     });
@@ -220,7 +244,6 @@ io.on('connection', (socket) => {
             if (!disconnectedPlayer) return;
 
             if (room.gameStarted) {
-                // MODO DUPLAS: Encerra a partida
                 if (room.mode === 'duo') {
                     io.to(roomId).emit('gameAborted', { 
                         message: `O jogador ${disconnectedPlayer.username} se desconectou. A partida em dupla foi encerrada.`
@@ -228,7 +251,6 @@ io.on('connection', (socket) => {
                     delete rooms[roomId];
                     console.log(`Partida (Dupla) na sala ${roomId} encerrada devido a desconexão.`);
                 } else {
-                // MODOS FFA: Apenas elimina o jogador e avisa os outros
                     io.to(roomId).emit('playerDisconnected', { 
                         playerId: disconnectedPlayer.playerId,
                         username: disconnectedPlayer.username 
@@ -239,7 +261,6 @@ io.on('connection', (socket) => {
                 return;
             }
 
-            // Se o jogo não começou, apenas remove o jogador do lobby.
             room.players = room.players.filter(p => p.id !== socket.id);
             
             if (room.players.length === 0) {
