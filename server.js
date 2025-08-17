@@ -202,6 +202,8 @@ io.on('connection', (socket) => {
             initialGameState.teamB = TEAM_B_IDS.filter(id => playerIdsInGame.includes(id));
         }
 
+        room.gameState = initialGameState; // Store the state on the room object
+
         playerClients.forEach(client => {
             const personalizedState = {
                 ...initialGameState,
@@ -235,6 +237,15 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('chatMessage', (message) => {
+        const roomId = socket.data.roomId;
+        const room = rooms[roomId];
+        const player = room?.players.find(p => p.id === socket.id);
+        if (player) {
+            io.to(roomId).emit('chatMessage', { speaker: player.username, message });
+        }
+    });
+
     const handleDisconnect = () => {
         console.log(`Jogador desconectado: ${socket.id}`);
         const roomId = socket.data.roomId;
@@ -251,11 +262,14 @@ io.on('connection', (socket) => {
                     delete rooms[roomId];
                     console.log(`Partida (Dupla) na sala ${roomId} encerrada devido a desconexão.`);
                 } else {
-                    io.to(roomId).emit('playerDisconnected', { 
-                        playerId: disconnectedPlayer.playerId,
-                        username: disconnectedPlayer.username 
-                    });
-                    console.log(`Jogador ${disconnectedPlayer.username} eliminado da partida na sala ${roomId}. O jogo continua.`);
+                    const playerState = room.gameState?.players[disconnectedPlayer.playerId];
+                    if (playerState && !playerState.isEliminated) {
+                         io.to(roomId).emit('playerDisconnected', { 
+                            playerId: disconnectedPlayer.playerId,
+                            username: disconnectedPlayer.username 
+                        });
+                        console.log(`Jogador ${disconnectedPlayer.username} eliminado da partida na sala ${roomId}. O jogo continua.`);
+                    }
                 }
                 io.emit('roomList', getPublicRoomsList());
                 return;
