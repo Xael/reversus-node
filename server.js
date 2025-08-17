@@ -24,6 +24,10 @@ const TEAM_B_IDS = ['player-2', 'player-4'];
 const NUM_PATHS = 6;
 const BOARD_SIZE = 9;
 
+const rooms = {};
+
+// --- FUNÇÕES DE LÓGICA DE JOGO ---
+
 const shuffle = (array) => {
     for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -64,48 +68,196 @@ const dealCard = (gameState, deckType) => {
     return gameState.decks[deckType].pop();
 };
 
-const rooms = {};
+const getInverseEffect = (effect) => {
+    const map = { 'Mais': 'Menos', 'Menos': 'Mais', 'Sobe': 'Desce', 'Desce': 'Sobe' };
+    return map[effect] || null;
+};
+
+const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse, options) => {
+    const target = gameState.players[targetId];
+    if (!target) return;
+
+    let effectName = card.isLocked ? card.lockedEffect : card.name;
+    const originalCardName = card.name;
+
+    if (gameState.reversusTotalActive && originalCardName !== 'Reversus Total' && !card.isLocked) {
+        const inverted = getInverseEffect(effectName);
+        if (inverted) {
+            gameState.log.unshift({ type: 'system', message: `Reversus Total inverteu ${originalCardName} para ${inverted}!` });
+            effectName = inverted;
+        }
+    }
+
+    switch (effectName) {
+        case 'Mais': case 'Menos':
+            target.effects.score = effectName;
+            break;
+        case 'Sobe': case 'Desce': case 'Pula':
+            target.effects.movement = effectName;
+            break;
+        case 'Reversus':
+            if (effectTypeToReverse === 'score') {
+                target.effects.score = getInverseEffect(target.effects.score);
+            } else if (effectTypeToReverse === 'movement') {
+                target.effects.movement = getInverseEffect(target.effects.movement);
+            }
+            break;
+        case 'Reversus Total':
+            if (options.isGlobal) {
+                gameState.reversusTotalActive = true;
+                Object.values(gameState.players).forEach(p => {
+                    if (p.effects.score && !p.playedCards.effect.some(c => c.isLocked && ['Mais', 'Menos'].includes(c.lockedEffect))) {
+                        p.effects.score = getInverseEffect(p.effects.score);
+                    }
+                    if (p.effects.movement && p.effects.movement !== 'Pula' && !p.playedCards.effect.some(c => c.isLocked && ['Sobe', 'Desce'].includes(c.lockedEffect))) {
+                        p.effects.movement = getInverseEffect(p.effects.movement);
+                    }
+                });
+            }
+            break;
+    }
+     gameState.log.unshift({ type: 'system', message: `${casterName} usou ${originalCardName} em ${target.name}.` });
+};
+
+const checkGameEnd = (room) => {
+    const { gameState } = room;
+    const gameWinners = gameState.playerIdsInGame.filter(id => !gameState.players[id].isEliminated && gameState.players[id].position >= WINNING_POSITION);
+    if (gameWinners.length > 0) {
+        gameState.gamePhase = 'game_over';
+        const winnerNames = gameWinners.map(id => gameState.players[id].name).join(' e ');
+        io.to(room.id).emit('gameOver', `${winnerNames} venceu o jogo!`);
+        delete rooms[room.id];
+        return true;
+    }
+    return false;
+};
+
+const startNewRound = (room) => {
+    const { gameState } = room;
+    gameState.turn++;
+    gameState.log.unshift({ type: 'system', message: `--- Iniciando Rodada ${gameState.turn} ---`});
+
+    gameState.playerIdsInGame.forEach(id => {
+        const player = gameState.players[id];
+        if (player.isEliminated) return;
+        
+        gameState.discardPiles.value.push(...player.playedCards.value);
+        gameState.discardPiles.effect.push(...player.playedCards.effect);
+        player.playedCards = { value: [], effect: [] };
+        if (player.nextResto) player.resto = player.nextResto;
+        player.nextResto = null;
+        player.effects = { score: null, movement: null };
+        player.playedValueCardThisTurn = false;
+    });
+
+    gameState.reversusTotalActive = false;
+    gameState.consecutivePasses = 0;
+    
+    gameState.playerIdsInGame.forEach(id => {
+        const player = gameState.players[id];
+        if (player.isEliminated) return;
+        while (player.hand.filter(c => c.type === 'value').length < MAX_VALUE_CARDS_IN_HAND) {
+            const newCard = dealCard(gameState, 'value');
+            if (newCard) player.hand.push(newCard); else break;
+        }
+        while (player.hand.filter(c => c.type === 'effect').length < MAX_EFFECT_CARDS_IN_HAND) {
+            const newCard = dealCard(gameState, 'effect');
+            if (newCard) player.hand.push(newCard); else break;
+        }
+    });
+
+    gameState.gamePhase = 'playing';
+    broadcastGameState(room.id);
+};
+
+const calculateScoresAndEndRound = (room) => {
+    const { gameState } = room;
+    gameState.gamePhase = 'resolution';
+    
+    const finalScores = {};
+    gameState.playerIdsInGame.forEach(id => {
+        const p = gameState.players[id];
+        if (p.isEliminated) return;
+        let score = p.playedCards.value.reduce((sum, card) => sum + card.value, 0);
+        let restoValue = p.resto?.value || 0;
+        if (p.effects.score === 'Mais') score += restoValue;
+        if (p.effects.score === 'Menos') score -= restoValue;
+        finalScores[id] = score;
+    });
+
+    let winners = [];
+    if (gameState.playerIdsInGame.filter(pId => !gameState.players[pId].isEliminated).length > 0) {
+        let highestScore = -Infinity;
+        gameState.playerIdsInGame.forEach(id => {
+            const p = gameState.players[id];
+            if (p.isEliminated) return;
+            if (finalScores[id] > highestScore) {
+                highestScore = finalScores[id]; winners = [id];
+            } else if (finalScores[id] === highestScore) {
+                winners.push(id);
+            }
+        });
+    }
+
+    if (winners.length > 1) { // Tie logic
+        if (gameState.gameMode === 'duo') {
+            const firstWinnerTeam = TEAM_A_IDS.includes(winners[0]) ? 'A' : 'B';
+            const allOnSameTeam = winners.every(id => (firstWinnerTeam === 'A' && TEAM_A_IDS.includes(id)) || (firstWinnerTeam === 'B' && TEAM_B_IDS.includes(id)));
+            if (!allOnSameTeam) winners = [];
+        } else {
+            winners = [];
+        }
+    }
+    
+    const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
+    gameState.log.unshift({ type: 'system', message: winners.length > 0 ? `Vencedor(es) da rodada: ${winnerNames}.` : "A rodada terminou em empate." });
+
+    gameState.playerIdsInGame.forEach(id => {
+        const p = gameState.players[id];
+        if (p.isEliminated) return;
+        let movement = 0;
+        if (winners.includes(id)) movement++;
+        if (p.effects.movement === 'Sobe') movement++;
+        if (p.effects.movement === 'Desce') movement--;
+        if (p.effects.movement === 'Pula' && p.targetPathForPula !== null) p.pathId = p.targetPathForPula;
+        if (movement !== 0) p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + movement));
+    });
+
+    if (checkGameEnd(room)) return;
+
+    if (winners.length > 0) {
+        const winnerTurnOrder = gameState.playerIdsInGame.filter(pId => winners.includes(pId));
+        gameState.currentPlayer = winnerTurnOrder[0];
+    }
+    
+    startNewRound(room);
+};
+
 
 // --- FUNÇÕES HELPER DO SERVIDOR ---
 function getLobbyDataForRoom(room) {
     return {
-        id: room.id,
-        name: room.name,
-        hostId: room.hostId,
+        id: room.id, name: room.name, hostId: room.hostId,
         players: room.players.map(p => ({ id: p.id, username: p.username, playerId: p.playerId })),
         mode: room.mode,
     };
 }
 
 function getPublicRoomsList() {
-    return Object.values(rooms)
-        .filter(r => !r.gameStarted)
-        .map(r => ({
-            id: r.id,
-            name: r.name,
-            playerCount: r.players.length,
-            mode: r.mode,
-        }));
+    return Object.values(rooms).filter(r => !r.gameStarted)
+        .map(r => ({ id: r.id, name: r.name, playerCount: r.players.length, mode: r.mode }));
 }
 
 function broadcastGameState(roomId) {
     const room = rooms[roomId];
     if (!room || !room.gameState) return;
-
     room.players.forEach(client => {
-        const personalizedState = {
-            ...room.gameState,
-            players: JSON.parse(JSON.stringify(room.gameState.players)) // Deep copy
-        };
-
-        // Hide opponent hands logic
+        const personalizedState = JSON.parse(JSON.stringify(room.gameState)); // Deep copy
         Object.keys(personalizedState.players).forEach(pId => {
             if (pId !== client.playerId && !(personalizedState.revealedHands || []).includes(pId)) {
-                 personalizedState.players[pId].hand = personalizedState.players[pId].hand.map(card => ({...card, isHidden: true}));
+                personalizedState.players[pId].hand = personalizedState.players[pId].hand.map(card => ({...card, isHidden: true}));
             }
         });
-        
-        // This is the key to fixing the perspective.
         personalizedState.myPlayerId = client.playerId;
         io.to(client.id).emit('gameStateUpdate', personalizedState);
     });
@@ -116,21 +268,14 @@ function broadcastGameState(roomId) {
 io.on('connection', (socket) => {
     console.log(`Jogador conectado: ${socket.id}`);
 
-    socket.on('listRooms', () => {
-        socket.emit('roomList', getPublicRoomsList());
-    });
+    socket.on('listRooms', () => { socket.emit('roomList', getPublicRoomsList()); });
 
     socket.on('createRoom', ({ username }) => {
         const roomId = `room-${Date.now()}`;
         const roomName = `Sala de ${username || 'Anônimo'}`;
         rooms[roomId] = {
-            id: roomId,
-            name: roomName,
-            hostId: socket.id,
-            players: [],
-            gameStarted: false,
-            mode: 'solo-4p',
-            gameState: null
+            id: roomId, name: roomName, hostId: socket.id, players: [],
+            gameStarted: false, mode: 'solo-4p', gameState: null
         };
         console.log(`Sala criada: ${roomId} por ${username}`);
         socket.emit('roomCreated', roomId);
@@ -142,12 +287,8 @@ io.on('connection', (socket) => {
         if (room && !room.gameStarted && room.players.length < 4) {
             socket.data.roomId = roomId;
             socket.join(roomId);
-
             const newPlayer = { id: socket.id, username, playerId: `player-${room.players.length + 1}` };
             room.players.push(newPlayer);
-            
-            console.log(`${username} entrou na sala ${roomId}`);
-            
             io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
             io.emit('roomList', getPublicRoomsList());
         } else {
@@ -160,7 +301,6 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         if (room && room.hostId === socket.id) {
             room.mode = newMode;
-            console.log(`Sala ${roomId} mudou para o modo ${newMode}`);
             io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
         }
     });
@@ -168,47 +308,35 @@ io.on('connection', (socket) => {
     socket.on('startGame', (roomId) => {
         const room = rooms[roomId];
         if (!room || room.hostId !== socket.id || room.gameStarted) return;
-        
         const playerCount = room.players.length;
         let isValidStart = false;
-        // CORREÇÃO: Usa '===' para garantir o número exato de jogadores para o modo.
         switch (room.mode) {
             case 'solo-2p': isValidStart = playerCount === 2; break;
             case 'solo-3p': isValidStart = playerCount === 3; break;
             case 'solo-4p': isValidStart = playerCount === 4; break;
             case 'duo': isValidStart = playerCount === 4; break;
         }
-
         if (!isValidStart) {
             socket.emit('error', 'O número de jogadores é incorreto para o modo de jogo selecionado.');
             return;
         }
-
         room.gameStarted = true;
         io.emit('roomList', getPublicRoomsList());
 
-        const playerClients = room.players;
-        const playerIdsInGame = playerClients.map(p => p.playerId);
-        
+        const playerIdsInGame = room.players.map(p => p.playerId);
         const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
         const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
-
         const drawnCards = {};
         playerIdsInGame.forEach(id => { drawnCards[id] = valueDeck.pop(); });
         const sortedPlayers = [...playerIdsInGame].sort((a, b) => (drawnCards[b]?.value || 0) - (drawnCards[a]?.value || 0));
         let startingPlayer = sortedPlayers[0];
         
-        if (sortedPlayers.length > 1 && drawnCards[sortedPlayers[0]]?.value === drawnCards[sortedPlayers[1]]?.value) {
-            startingPlayer = sortedPlayers[Math.floor(Math.random() * sortedPlayers.length)];
-        }
-
         const playersState = {};
-        playerClients.forEach((clientPlayer, index) => {
+        room.players.forEach((clientPlayer, index) => {
             const pId = clientPlayer.playerId;
             playersState[pId] = {
                 id: pId, name: clientPlayer.username, isHuman: true,
-                hand: [], pathId: index, position: 1,
-                resto: drawnCards[pId], 
+                hand: [], pathId: index, position: 1, resto: drawnCards[pId], 
                 nextResto: null, effects: { score: null, movement: null },
                 playedCards: { value: [], effect: [] }, playedValueCardThisTurn: false,
                 liveScore: 0, status: 'neutral', isEliminated: false,
@@ -217,67 +345,83 @@ io.on('connection', (socket) => {
             for (let i = 0; i < MAX_EFFECT_CARDS_IN_HAND; i++) playersState[pId].hand.push(effectDeck.pop());
         });
         
-        const drawnCardsText = playerIdsInGame.map(id => `${playersState[id].name} (carta ${drawnCards[id].name})`).join(', ');
-        const initialLog = [
-            { type: 'system', message: `O jogo começou na ${room.name}!`},
-            { type: 'system', message: `Sorteio inicial: ${drawnCardsText}.`},
-            { type: 'system', message: `${playersState[startingPlayer].name} tirou a carta mais alta e começa!` }
-        ];
+        const initialLog = [{ type: 'system', message: `${playersState[startingPlayer].name} tirou a carta mais alta e começa!` }];
         
-        const initialGameState = {
-            playerIdsInGame,
-            players: playersState,
+        room.gameState = {
+            playerIdsInGame, players: playersState,
             decks: { value: valueDeck, effect: effectDeck },
             discardPiles: { value: Object.values(drawnCards), effect: [] },
-            boardPaths: generateBoardPaths(),
-            gamePhase: 'playing', gameMode: room.mode, 
-            currentPlayer: startingPlayer,
-            turn: 1, 
-            log: initialLog.map(msg => typeof msg === 'string' ? { type: 'system', message: msg } : msg), // Garante que tudo é objeto
-            reversusTotalActive: false, consecutivePasses: 0,
-            activeFieldEffects: [], 
-            revealedHands: [],
+            boardPaths: generateBoardPaths(), gamePhase: 'playing', gameMode: room.mode, 
+            currentPlayer: startingPlayer, turn: 1, log: initialLog, reversusTotalActive: false,
+            consecutivePasses: 0, activeFieldEffects: [], revealedHands: [],
         };
         
-        if (room.mode === 'duo') {
-            initialGameState.teamA = TEAM_A_IDS.filter(id => playerIdsInGame.includes(id));
-            initialGameState.teamB = TEAM_B_IDS.filter(id => playerIdsInGame.includes(id));
-        }
-
-        room.gameState = initialGameState;
-        
-        io.to(roomId).emit('gameStarted'); // Signal to clients to setup their game UI
-        broadcastGameState(roomId); // Broadcast personalized states
+        io.to(roomId).emit('gameStarted');
+        broadcastGameState(roomId);
         console.log(`Jogo iniciado na sala ${roomId} no modo ${room.mode}`);
     });
+
+    socket.on('playCard', ({ cardId, targetId, options = {} }) => {
+        const roomId = socket.data.roomId;
+        const room = rooms[roomId];
+        const player = room?.players.find(p => p.id === socket.id);
+        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
+
+        const playerState = room.gameState.players[player.playerId];
+        const cardIndex = playerState.hand.findIndex(c => c.id === cardId);
+        if (cardIndex === -1) return;
+
+        const [card] = playerState.hand.splice(cardIndex, 1);
+        room.gameState.consecutivePasses = 0;
+        
+        let cardDestinationPlayer = room.gameState.players[targetId];
+
+        if (card.type === 'value') {
+            playerState.playedCards.value.push(card);
+            playerState.playedValueCardThisTurn = true;
+            playerState.nextResto = card;
+            room.gameState.log.unshift({ type: 'system', message: `${playerState.name} jogou a carta de valor ${card.name}.` });
+        } else {
+            if (options.isIndividualLock) {
+                card.isLocked = true;
+                card.lockedEffect = options.effectNameToApply;
+            }
+            if (card.name === 'Pula' && options.targetPath !== undefined) {
+                cardDestinationPlayer.targetPathForPula = options.targetPath;
+            }
+            if (card.name === 'Reversus') {
+                card.reversedEffectType = options.type;
+            }
+            
+            cardDestinationPlayer.playedCards.effect.push(card);
+            applyEffect(room.gameState, card, targetId, playerState.name, options.type, options);
+        }
+        
+        broadcastGameState(roomId);
+    });
     
-    // Server handles the end turn logic now
     socket.on('endTurn', () => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
-        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) {
-            return; 
-        }
+        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
 
         room.gameState.consecutivePasses++;
         
         const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
         if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length) {
-            // TODO: Implement full end of round scoring and pawn movement
-            // For now, this just advances turn. The full logic is complex.
+            calculateScoresAndEndRound(room);
+        } else {
+            let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
+            let nextIndex = currentIndex;
+            do {
+                nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
+            } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
+            room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+            room.gameState.players[room.gameState.currentPlayer].playedValueCardThisTurn = false;
+            
+            broadcastGameState(roomId);
         }
-
-        // Advance to next player
-        let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
-        let nextIndex = currentIndex;
-        do {
-            nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
-        } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
-        room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
-        room.gameState.players[room.gameState.currentPlayer].playedValueCardThisTurn = false;
-        
-        broadcastGameState(roomId);
     });
 
     socket.on('lobbyChatMessage', (message) => {
@@ -294,7 +438,7 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
         if (player && room.gameState) {
-            const sanitizedMessage = String(message).substring(0, 150); // Sanitize and limit length
+            const sanitizedMessage = String(message).substring(0, 150);
             room.gameState.log.unshift({ type: 'dialogue', speaker: player.username, message: sanitizedMessage });
             io.to(roomId).emit('chatMessage', { speaker: player.username, message: sanitizedMessage });
         }
@@ -304,27 +448,20 @@ io.on('connection', (socket) => {
         console.log(`Jogador desconectado: ${socket.id}`);
         const roomId = socket.data.roomId;
         if (!roomId || !rooms[roomId]) return;
-
         const room = rooms[roomId];
         const disconnectedPlayer = room.players.find(p => p.id === socket.id);
         if (!disconnectedPlayer) return;
 
         if (room.gameStarted && room.gameState) {
-            const playerState = room.gameState.players[disconnectedPlayer.playerId];
-            
             if (room.mode === 'duo') {
-                io.to(roomId).emit('gameAborted', { 
-                    message: `O jogador ${disconnectedPlayer.username} se desconectou. A partida em dupla foi encerrada.`
-                });
-                console.log(`Partida (Dupla) na sala ${roomId} encerrada devido a desconexão.`);
+                io.to(roomId).emit('gameAborted', { message: `O jogador ${disconnectedPlayer.username} se desconectou. A partida em dupla foi encerrada.` });
                 delete rooms[roomId];
             } else {
+                const playerState = room.gameState.players[disconnectedPlayer.playerId];
                 if (playerState && !playerState.isEliminated) {
                     playerState.isEliminated = true;
                     room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} se desconectou e foi eliminado.`});
-                    
                     const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
-                    
                     if (activePlayers.length <= 1) {
                         const winnerName = activePlayers.length === 1 ? room.gameState.players[activePlayers[0]].name : "Ninguém";
                         io.to(roomId).emit('gameOver', `${winnerName} venceu por W.O.!`);
@@ -339,19 +476,15 @@ io.on('connection', (socket) => {
                            room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
                        }
                        broadcastGameState(roomId);
-                       console.log(`Jogador ${disconnectedPlayer.username} eliminado da partida na sala ${roomId}. O jogo continua.`);
                     }
                 }
             }
-        } else { // If game hasn't started, just remove from lobby
+        } else {
             room.players = room.players.filter(p => p.id !== socket.id);
             if (room.players.length === 0) {
-                console.log(`Sala vazia e deletada: ${roomId}`);
                 delete rooms[roomId];
             } else {
-                if (room.hostId === socket.id) {
-                    room.hostId = room.players[0].id; // Assign a new host
-                }
+                if (room.hostId === socket.id) room.hostId = room.players[0].id;
                 io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
             }
         }
