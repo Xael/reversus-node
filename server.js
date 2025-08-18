@@ -2,24 +2,10 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
-const { OAuth2Client } = require('google-auth-library');
 const db = require('./db.js');
 
 const app = express();
-
-// 🔥 middleware para corrigir COOP/COEP
-app.use((req, res, next) => {
-  res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
-  res.setHeader("Cross-Origin-Embedder-Policy", "unsafe-none");
-  next();
-});
-
 const server = http.createServer(app);
-
-// Adicione o seu Google Client ID aqui. Por segurança, em um projeto real,
-// isso viria de uma variável de ambiente (process.env.GOOGLE_CLIENT_ID).
-const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
-const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 const io = new Server(server, {
   cors: {
@@ -182,7 +168,7 @@ const checkGameEnd = (room) => {
         allPlayers.forEach(p => {
             const isWinner = gameWinners.includes(p.playerId);
             const xpGained = isWinner ? 100 : 25;
-            db.addXp(p.user.googleId, xpGained);
+            db.addXp(p.user.uuid, xpGained);
             
             const matchData = {
                 outcome: isWinner ? 'Vitória' : 'Derrota',
@@ -190,7 +176,7 @@ const checkGameEnd = (room) => {
                 opponents: isWinner ? opponentsNames : winnerNames,
                 date: new Date().toISOString()
             };
-            db.addMatchToHistory(p.user.googleId, matchData);
+            db.addMatchToHistory(p.user.uuid, matchData);
         });
         
         io.to(room.id).emit('gameOver', `${winnerNames} venceu o jogo!`);
@@ -366,20 +352,18 @@ function broadcastGameState(roomId) {
 io.on('connection', (socket) => {
     console.log(`Jogador conectado: ${socket.id}`);
 
-    socket.on('loginWithGoogle', async ({ token }) => {
+    socket.on('authenticate', async (userData) => {
+        if (!userData || !userData.uuid || !userData.name) {
+            return socket.emit('loginError', 'Dados de autenticação inválidos.');
+        }
         try {
-            const ticket = await client.verifyIdToken({
-                idToken: token,
-                audience: GOOGLE_CLIENT_ID,
-            });
-            const payload = ticket.getPayload();
-            const user = await db.findOrCreateUser(payload);
+            const user = await db.findOrCreateUser(userData);
             socket.data.user = user;
             socket.emit('loginSuccess', { user, rooms: getPublicRoomsList() });
-            console.log(`Usuário autenticado: ${user.name} (${user.googleId})`);
+            console.log(`Usuário autenticado: ${user.name} (${user.uuid})`);
         } catch (error) {
-            console.error('Falha na autenticação do Google:', error);
-            socket.emit('loginError', 'Token do Google inválido.');
+            console.error('Falha na autenticação:', error);
+            socket.emit('loginError', 'Ocorreu um erro no servidor.');
         }
     });
 
@@ -388,9 +372,9 @@ io.on('connection', (socket) => {
         socket.emit('rankingData', ranking);
     });
 
-    socket.on('getMyProfile', async () => {
-        if (socket.data.user) {
-            const profile = await db.getUserProfile(socket.data.user.googleId);
+    socket.on('getMyProfile', async ({ uuid }) => {
+        if (uuid) {
+            const profile = await db.getUserProfile(uuid);
             socket.emit('profileData', profile);
         }
     });
@@ -512,7 +496,7 @@ io.on('connection', (socket) => {
         } else {
             // Rastreamento de maestria
             if (card.name === 'Reversus') {
-                db.incrementMastery(player.user.googleId, 'reversusPlayed');
+                db.incrementMastery(player.user.uuid, 'reversusPlayed');
             }
         
             const cardDestinationPlayer = room.gameState.players[targetId];

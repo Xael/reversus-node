@@ -31,24 +31,23 @@ function writeDb(data) {
 }
 
 // Função para encontrar um usuário ou criar um novo se ele não existir
-async function findOrCreateUser(googleProfile) {
+async function findOrCreateUser({ uuid, name }) {
     const db = readDb();
-    const googleId = googleProfile.sub;
 
-    if (db[googleId]) {
-        // Atualiza nome e foto caso tenham mudado no Google
-        db[googleId].name = googleProfile.name;
-        db[googleId].picture = googleProfile.picture;
-        writeDb(db);
-        return db[googleId];
+    if (db[uuid]) {
+        // Atualiza o nome se o jogador decidir mudá-lo (lógica futura)
+        if (db[uuid].name !== name) {
+            db[uuid].name = name;
+            writeDb(db);
+        }
+        return db[uuid];
     }
 
     // Cria um novo usuário com estatísticas padrão
     const newUser = {
-        googleId: googleId,
-        name: googleProfile.name,
-        email: googleProfile.email,
-        picture: googleProfile.picture,
+        uuid: uuid,
+        name: name,
+        picture: null, // Contas de convidado não têm foto
         stats: {
             wins: 0,
             losses: 0,
@@ -63,15 +62,15 @@ async function findOrCreateUser(googleProfile) {
         matchHistory: []
     };
 
-    db[googleId] = newUser;
+    db[uuid] = newUser;
     writeDb(db);
     return newUser;
 }
 
 // Adiciona XP e verifica se o jogador subiu de nível
-function addXp(googleId, amount) {
+function addXp(uuid, amount) {
     const db = readDb();
-    const user = db[googleId];
+    const user = db[uuid];
     if (user) {
         user.stats.xp = (user.stats.xp || 0) + amount;
         
@@ -92,9 +91,9 @@ function addXp(googleId, amount) {
 }
 
 // Incrementa uma maestria específica e verifica se um título foi ganho
-function incrementMastery(googleId, masteryKey) {
+function incrementMastery(uuid, masteryKey) {
     const db = readDb();
-    const user = db[googleId];
+    const user = db[uuid];
     if (user) {
         if (!user.masteries) user.masteries = {};
         user.masteries[masteryKey] = (user.masteries[masteryKey] || 0) + 1;
@@ -109,9 +108,9 @@ function incrementMastery(googleId, masteryKey) {
 }
 
 // Adiciona uma partida ao histórico do jogador
-function addMatchToHistory(googleId, matchData) {
+function addMatchToHistory(uuid, matchData) {
     const db = readDb();
-    const user = db[googleId];
+    const user = db[uuid];
     if (user) {
         if (!user.matchHistory) user.matchHistory = [];
         user.matchHistory.unshift(matchData); // Adiciona no início
@@ -142,9 +141,9 @@ async function getTopTenPlayers() {
 }
 
 // Retorna o perfil completo de um usuário
-async function getUserProfile(googleId) {
+async function getUserProfile(uuid) {
     const db = readDb();
-    return db[googleId] || null;
+    return db[uuid] || null;
 }
 
 // Inicializa o banco de dados na primeira vez que o módulo é carregado
