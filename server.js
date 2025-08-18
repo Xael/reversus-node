@@ -2,9 +2,16 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
+const { OAuth2Client } = require('google-auth-library');
+const db = require('./db.js');
 
 const app = express();
 const server = http.createServer(app);
+
+// Adicione o seu Google Client ID aqui. Por segurança, em um projeto real,
+// isso viria de uma variável de ambiente (process.env.GOOGLE_CLIENT_ID).
+const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
+const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 const io = new Server(server, {
   cors: {
@@ -12,6 +19,7 @@ const io = new Server(server, {
     methods: ["GET", "POST"]
   }
 });
+
 
 // --- LÓGICA DE JOGO COMPLETA NO SERVIDOR ---
 const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { value: 6, count: 8 }, { value: 8, count: 6 }, { value: 10, count: 4 }];
