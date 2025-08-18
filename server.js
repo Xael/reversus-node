@@ -3,7 +3,6 @@ const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const { OAuth2Client } = require('google-auth-library');
-const db = require('./db.js');
 
 const app = express();
 const server = http.createServer(app);
@@ -13,13 +12,13 @@ const server = http.createServer(app);
 const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
+
 const io = new Server(server, {
   cors: {
     origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host", "http://localhost:8080"],
     methods: ["GET", "POST"]
   }
 });
-
 
 // --- LÓGICA DE JOGO COMPLETA NO SERVIDOR ---
 const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { value: 6, count: 8 }, { value: 8, count: 6 }, { value: 10, count: 4 }];
@@ -464,9 +463,42 @@ function broadcastGameState(roomId) {
 io.on('connection', (socket) => {
     console.log(`Jogador conectado: ${socket.id}`);
 
+    socket.on('google-login', async ({ token }) => {
+        try {
+            const ticket = await client.verifyIdToken({
+                idToken: token,
+                audience: GOOGLE_CLIENT_ID,
+            });
+            const payload = ticket.getPayload();
+            
+            const userProfile = {
+                googleId: payload.sub,
+                name: payload.name,
+                email: payload.email,
+                avatarUrl: payload.picture,
+            };
+
+            // Armazena o perfil do usuário na sessão do socket para uso posterior
+            socket.data.userProfile = userProfile;
+
+            // Envia o perfil de volta para o cliente para confirmar o login
+            socket.emit('loginSuccess', userProfile);
+            console.log(`Login do Google bem-sucedido para: ${userProfile.name}`);
+
+        } catch (error) {
+            console.error('Falha na verificação do token do Google:', error);
+            socket.emit('loginError', 'Falha na verificação do token.');
+        }
+    });
+
+
     socket.on('listRooms', () => { socket.emit('roomList', getPublicRoomsList()); });
 
-    socket.on('createRoom', ({ username }) => {
+    socket.on('createRoom', () => {
+        if (!socket.data.userProfile) {
+            return socket.emit('error', 'Você precisa estar logado para criar uma sala.');
+        }
+        const username = socket.data.userProfile.name;
         const roomId = `room-${Date.now()}`;
         const roomName = `Sala de ${username || 'Anônimo'}`;
         rooms[roomId] = {
@@ -478,7 +510,11 @@ io.on('connection', (socket) => {
         io.emit('roomList', getPublicRoomsList());
     });
 
-    socket.on('joinRoom', ({ roomId, username }) => {
+    socket.on('joinRoom', ({ roomId }) => {
+        if (!socket.data.userProfile) {
+            return socket.emit('error', 'Você precisa estar logado para entrar em uma sala.');
+        }
+        const username = socket.data.userProfile.name;
         const room = rooms[roomId];
         if (room && !room.gameStarted && room.players.length < 4) {
             socket.data.roomId = roomId;
