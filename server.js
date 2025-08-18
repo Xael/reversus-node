@@ -2,7 +2,6 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
-const db = require('./db.js');
 
 const app = express();
 const server = http.createServer(app);
@@ -105,13 +104,14 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
     let effectName = card.isLocked ? card.lockedEffect : card.name;
     const originalCardName = card.name;
     
+    // APLICAÇÃO DE IMUNIDADE: Verifica se o alvo está imune
     const isDuo = gameState.gameMode === 'duo';
     const targetTeamIds = isDuo ? (TEAM_A_IDS.includes(targetId) ? TEAM_A_IDS : TEAM_B_IDS) : [targetId];
     const isImmune = gameState.activeFieldEffects.some(fe => fe.name === 'Imunidade' && targetTeamIds.includes(fe.appliesTo));
     
     if (isImmune && (effectName === 'Menos' || effectName === 'Desce')) {
         gameState.log.unshift({ type: 'system', message: `${target.name} está imune a ${effectName} nesta rodada!` });
-        return;
+        return; // Bloqueia o efeito
     }
 
     if (gameState.reversusTotalActive && originalCardName !== 'Reversus Total' && !card.isLocked) {
@@ -158,29 +158,9 @@ const checkGameEnd = (room) => {
     const gameWinners = gameState.playerIdsInGame.filter(id => !gameState.players[id].isEliminated && gameState.players[id].position >= WINNING_POSITION);
     if (gameWinners.length > 0) {
         gameState.gamePhase = 'game_over';
-        
         const winnerNames = gameWinners.map(id => gameState.players[id].name).join(' e ');
-        
-        // --- ATUALIZAÇÃO: Lógica de XP e Histórico ---
-        const allPlayers = room.players.map(p => ({ user: p.user, playerId: p.playerId }));
-        const opponentsNames = allPlayers.filter(p => !gameWinners.includes(p.playerId)).map(p => p.user.name).join(', ');
-
-        allPlayers.forEach(p => {
-            const isWinner = gameWinners.includes(p.playerId);
-            const xpGained = isWinner ? 100 : 25;
-            db.addXp(p.user.uuid, xpGained);
-            
-            const matchData = {
-                outcome: isWinner ? 'Vitória' : 'Derrota',
-                mode: `PvP ${room.mode}`,
-                opponents: isWinner ? opponentsNames : winnerNames,
-                date: new Date().toISOString()
-            };
-            db.addMatchToHistory(p.user.uuid, matchData);
-        });
-        
         io.to(room.id).emit('gameOver', `${winnerNames} venceu o jogo!`);
-        delete rooms[room.id]; // Limpa a sala após o fim do jogo
+        delete rooms[room.id];
         return true;
     }
     return false;
@@ -188,7 +168,7 @@ const checkGameEnd = (room) => {
 
 const triggerServerFieldEffects = (room) => {
     const { gameState } = room;
-    gameState.activeFieldEffects = []; // Reset effects
+    gameState.activeFieldEffects = []; // Reset effects at the start of the round
 
     gameState.playerIdsInGame.forEach(id => {
         const player = gameState.players[id];
@@ -200,12 +180,116 @@ const triggerServerFieldEffects = (room) => {
         const space = path.spaces[player.position - 1];
 
         if (space && space.effectName && !space.isUsed) {
-            // Lógica simplificada para o servidor, já que o cliente cuida da exibição detalhada
             const effectName = space.effectName;
             gameState.log.unshift({ type: 'system', message: `${player.name} ativou o efeito de campo: ${effectName}!` });
-            const isPositive = POSITIVE_EFFECTS.hasOwnProperty(effectName);
-            gameState.activeFieldEffects.push({ name: effectName, type: isPositive ? 'positive' : 'negative', appliesTo: id });
-            space.isUsed = true;
+            
+            let effectSucceeded = false;
+            const isDuo = gameState.gameMode === 'duo';
+            const partner = isDuo ? gameState.players[TEAM_A_IDS.includes(id) ? TEAM_A_IDS.find(pId => pId !== id) : TEAM_B_IDS.find(pId => pId !== id)] : null;
+            
+            switch (effectName) {
+                case 'Carta Menor': {
+                    const valueCards = player.hand.filter(c => c.type === 'value').sort((a,b) => a.value - b.value);
+                    if (valueCards.length > 0) {
+                        const cardToDiscard = valueCards[0];
+                        player.hand = player.hand.filter(c => c.id !== cardToDiscard.id);
+                        gameState.discardPiles.value.push(cardToDiscard);
+                        const newCard = dealCard(gameState, 'value');
+                        if (newCard) player.hand.push(newCard);
+                        gameState.log.unshift({ type: 'system', message: `${player.name} descartou ${cardToDiscard.name} e comprou uma nova carta.` });
+                        effectSucceeded = true;
+                    }
+                    if (isDuo && partner) {
+                        const partnerValueCards = partner.hand.filter(c => c.type === 'value').sort((a,b) => a.value - b.value);
+                        if (partnerValueCards.length > 0) {
+                             const cardToDiscard = partnerValueCards[0];
+                             partner.hand = partner.hand.filter(c => c.id !== cardToDiscard.id);
+                             gameState.discardPiles.value.push(cardToDiscard);
+                             const newCard = dealCard(gameState, 'value');
+                             if (newCard) partner.hand.push(newCard);
+                             gameState.log.unshift({ type: 'system', message: `${partner.name} (dupla) também descartou ${cardToDiscard.name} e comprou uma nova carta.` });
+                             effectSucceeded = true;
+                        }
+                    }
+                    break;
+                }
+                case 'Carta Maior': {
+                    const valueCards = player.hand.filter(c => c.type === 'value').sort((a,b) => b.value - a.value);
+                    if (valueCards.length > 0) {
+                        const cardToDiscard = valueCards[0];
+                        player.hand = player.hand.filter(c => c.id !== cardToDiscard.id);
+                        gameState.discardPiles.value.push(cardToDiscard);
+                        const newCard = dealCard(gameState, 'value');
+                        if (newCard) player.hand.push(newCard);
+                        gameState.log.unshift({ type: 'system', message: `${player.name} descartou ${cardToDiscard.name} e comprou uma nova carta.` });
+                        effectSucceeded = true;
+                    }
+                    if (isDuo && partner) {
+                        const partnerValueCards = partner.hand.filter(c => c.type === 'value').sort((a,b) => b.value - a.value);
+                         if (partnerValueCards.length > 0) {
+                             const cardToDiscard = partnerValueCards[0];
+                             partner.hand = partner.hand.filter(c => c.id !== cardToDiscard.id);
+                             gameState.discardPiles.value.push(cardToDiscard);
+                             const newCard = dealCard(gameState, 'value');
+                             if (newCard) partner.hand.push(newCard);
+                             gameState.log.unshift({ type: 'system', message: `${partner.name} (dupla) também descartou ${cardToDiscard.name} e comprou uma nova carta.` });
+                             effectSucceeded = true;
+                        }
+                    }
+                    break;
+                }
+                case 'Troca Justa': {
+                     const opponents = gameState.playerIdsInGame.filter(oid => oid !== id && !gameState.players[oid].isEliminated);
+                     if (opponents.length > 0) {
+                        const targetOpponent = gameState.players[opponents[Math.floor(Math.random() * opponents.length)]];
+                        const myCards = player.hand.filter(c => c.type === 'value').sort((a, b) => a.value - b.value);
+                        const opponentCards = targetOpponent.hand.filter(c => c.type === 'value').sort((a, b) => b.value - a.value);
+                        if (myCards.length > 0 && opponentCards.length > 0) {
+                            const cardToGive = myCards[0]; const cardToTake = opponentCards[0];
+                            player.hand = player.hand.filter(c => c.id !== cardToGive.id); player.hand.push(cardToTake);
+                            targetOpponent.hand = targetOpponent.hand.filter(c => c.id !== cardToTake.id); targetOpponent.hand.push(cardToGive);
+                            gameState.log.unshift({ type: 'system', message: `${player.name} trocou sua carta ${cardToGive.name} pela carta ${cardToTake.name} de ${targetOpponent.name}.` });
+                            effectSucceeded = true;
+                        }
+                    }
+                    break;
+                }
+                case 'Troca Injusta': {
+                    const opponents = gameState.playerIdsInGame.filter(oid => oid !== id && !gameState.players[oid].isEliminated);
+                     if (opponents.length > 0) {
+                        const targetOpponent = gameState.players[opponents[Math.floor(Math.random() * opponents.length)]];
+                        const myCards = player.hand.filter(c => c.type === 'value').sort((a, b) => b.value - a.value);
+                        const opponentCards = targetOpponent.hand.filter(c => c.type === 'value').sort((a, b) => a.value - b.value);
+                        if (myCards.length > 0 && opponentCards.length > 0) {
+                            const cardToGive = myCards[0]; const cardToTake = opponentCards[0];
+                            player.hand = player.hand.filter(c => c.id !== cardToGive.id); player.hand.push(cardToTake);
+                            targetOpponent.hand = targetOpponent.hand.filter(c => c.id !== cardToTake.id); targetOpponent.hand.push(cardToGive);
+                            gameState.log.unshift({ type: 'system', message: `${player.name} foi forçado a trocar ${cardToGive.name} pela ${cardToTake.name} de ${targetOpponent.name}.` });
+                            effectSucceeded = true;
+                        }
+                    }
+                    break;
+                }
+                case 'Total Revesus Nada!': {
+                    const effectCards = player.hand.filter(c => c.type === 'effect');
+                    player.hand = player.hand.filter(c => c.type !== 'effect');
+                    gameState.discardPiles.effect.push(...effectCards);
+                    if (effectCards.length > 0) {
+                        gameState.log.unshift({ type: 'system', message: `${player.name} descartou todas as ${effectCards.length} cartas de efeito.` });
+                        effectSucceeded = true;
+                    }
+                    break;
+                }
+                default: { // All simple flag-based effects
+                    const isPositive = POSITIVE_EFFECTS.hasOwnProperty(effectName);
+                    const appliesToList = (isDuo && partner && ['Imunidade', 'Desafio', 'Impulso', 'Super Exposto', 'Castigo', 'Parada'].includes(effectName)) ? [player.id, partner.id] : [player.id];
+                    appliesToList.forEach(targetId => {
+                         gameState.activeFieldEffects.push({ name: effectName, type: isPositive ? 'positive' : 'negative', appliesTo: targetId });
+                    });
+                    effectSucceeded = true;
+                }
+            }
+            if (effectSucceeded) space.isUsed = true;
         }
     });
 };
@@ -231,6 +315,7 @@ const startNewRound = (room) => {
     gameState.reversusTotalActive = false;
     gameState.consecutivePasses = 0;
     
+    // Trigger field effects at the start of the new round
     triggerServerFieldEffects(room);
     
     gameState.playerIdsInGame.forEach(id => {
@@ -261,6 +346,7 @@ const calculateScoresAndEndRound = (room) => {
         let score = p.playedCards.value.reduce((sum, card) => sum + card.value, 0);
         let restoValue = p.resto?.value || 0;
         
+        // Check for field effects
         if (gameState.activeFieldEffects.some(fe => fe.name === 'Resto Maior' && fe.appliesTo === id)) restoValue = 10;
         if (gameState.activeFieldEffects.some(fe => fe.name === 'Resto Menor' && fe.appliesTo === id)) restoValue = 2;
         
@@ -302,12 +388,25 @@ const calculateScoresAndEndRound = (room) => {
         let movement = 0;
         const isWinner = winners.includes(id);
 
+        // Standard win/loss effects
         if (isWinner && !gameState.activeFieldEffects.some(fe => fe.name === 'Parada' && fe.appliesTo === id)) {
-            movement += 1;
+            let advance = 1;
+            if (gameState.activeFieldEffects.some(fe => fe.name === 'Desafio' && fe.appliesTo === id) && p.effects.score !== 'Mais' && p.effects.movement !== 'Sobe') {
+                advance = 3;
+            }
+            movement += advance;
+        }
+        if (!isWinner && winners.length > 0) { // is a loser
+             if (gameState.activeFieldEffects.some(fe => fe.name === 'Castigo' && fe.appliesTo === id)) movement -= 3;
+             if (gameState.activeFieldEffects.some(fe => fe.name === 'Impulso' && fe.appliesTo === id)) movement += 1;
         }
         
+        // Card effects
         if (p.effects.movement === 'Sobe') movement++;
-        if (p.effects.movement === 'Desce') movement--;
+        if (p.effects.movement === 'Desce') {
+            let modifier = gameState.activeFieldEffects.some(fe => fe.name === 'Super Exposto' && fe.appliesTo === id) ? 2 : 1;
+            movement -= modifier;
+        }
         if (p.effects.movement === 'Pula' && p.targetPathForPula !== null) p.pathId = p.targetPathForPula;
         if (movement !== 0) p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + movement));
     });
@@ -322,10 +421,12 @@ const calculateScoresAndEndRound = (room) => {
     startNewRound(room);
 };
 
+
+// --- FUNÇÕES HELPER DO SERVIDOR ---
 function getLobbyDataForRoom(room) {
     return {
         id: room.id, name: room.name, hostId: room.hostId,
-        players: room.players.map(p => ({ id: p.id, name: p.user.name, playerId: p.playerId })),
+        players: room.players.map(p => ({ id: p.id, username: p.username, playerId: p.playerId })),
         mode: room.mode,
     };
 }
@@ -339,53 +440,27 @@ function broadcastGameState(roomId) {
     const room = rooms[roomId];
     if (!room || !room.gameState) return;
     room.players.forEach(client => {
-        const personalizedState = JSON.parse(JSON.stringify(room.gameState));
+        const personalizedState = JSON.parse(JSON.stringify(room.gameState)); // Deep copy
         Object.keys(personalizedState.players).forEach(pId => {
             if (pId !== client.playerId && !(personalizedState.revealedHands || []).includes(pId)) {
                 personalizedState.players[pId].hand = personalizedState.players[pId].hand.map(card => ({...card, isHidden: true}));
             }
         });
+        personalizedState.myPlayerId = client.playerId;
         io.to(client.id).emit('gameStateUpdate', personalizedState);
     });
 }
+// --- FIM DAS FUNÇÕES HELPER ---
+
 
 io.on('connection', (socket) => {
     console.log(`Jogador conectado: ${socket.id}`);
 
-    socket.on('authenticate', async (userData) => {
-        if (!userData || !userData.uuid || !userData.name) {
-            return socket.emit('loginError', 'Dados de autenticação inválidos.');
-        }
-        try {
-            const user = await db.findOrCreateUser(userData);
-            socket.data.user = user;
-            socket.emit('loginSuccess', { user, rooms: getPublicRoomsList() });
-            console.log(`Usuário autenticado: ${user.name} (${user.uuid})`);
-        } catch (error) {
-            console.error('Falha na autenticação:', error);
-            socket.emit('loginError', 'Ocorreu um erro no servidor.');
-        }
-    });
-
-    socket.on('getRanking', async () => {
-        const ranking = await db.getTopTenPlayers();
-        socket.emit('rankingData', ranking);
-    });
-
-    socket.on('getMyProfile', async ({ uuid }) => {
-        if (uuid) {
-            const profile = await db.getUserProfile(uuid);
-            socket.emit('profileData', profile);
-        }
-    });
-
     socket.on('listRooms', () => { socket.emit('roomList', getPublicRoomsList()); });
 
-    socket.on('createRoom', () => {
-        if (!socket.data.user) return socket.emit('error', 'Você precisa estar logado para criar uma sala.');
-        const username = socket.data.user.name;
+    socket.on('createRoom', ({ username }) => {
         const roomId = `room-${Date.now()}`;
-        const roomName = `Sala de ${username || 'Jogador'}`;
+        const roomName = `Sala de ${username || 'Anônimo'}`;
         rooms[roomId] = {
             id: roomId, name: roomName, hostId: socket.id, players: [],
             gameStarted: false, mode: 'solo-4p', gameState: null
@@ -395,13 +470,12 @@ io.on('connection', (socket) => {
         io.emit('roomList', getPublicRoomsList());
     });
 
-    socket.on('joinRoom', (roomId) => {
-        if (!socket.data.user) return socket.emit('error', 'Você precisa estar logado para entrar em uma sala.');
+    socket.on('joinRoom', ({ roomId, username }) => {
         const room = rooms[roomId];
         if (room && !room.gameStarted && room.players.length < 4) {
             socket.data.roomId = roomId;
             socket.join(roomId);
-            const newPlayer = { id: socket.id, user: socket.data.user, playerId: `player-${room.players.length + 1}` };
+            const newPlayer = { id: socket.id, username, playerId: `player-${room.players.length + 1}` };
             room.players.push(newPlayer);
             io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
             io.emit('roomList', getPublicRoomsList());
@@ -449,7 +523,7 @@ io.on('connection', (socket) => {
         room.players.forEach((clientPlayer, index) => {
             const pId = clientPlayer.playerId;
             playersState[pId] = {
-                id: pId, name: clientPlayer.user.name, isHuman: true,
+                id: pId, name: clientPlayer.username, isHuman: true,
                 hand: [], pathId: index, position: 1, resto: drawnCards[pId], 
                 nextResto: null, effects: { score: null, movement: null },
                 playedCards: { value: [], effect: [] }, playedValueCardThisTurn: false,
@@ -488,18 +562,53 @@ io.on('connection', (socket) => {
         const [card] = playerState.hand.splice(cardIndex, 1);
         room.gameState.consecutivePasses = 0;
         
+        let cardDestinationPlayer = room.gameState.players[targetId];
+
+        // --- ANIMAÇÃO E LÓGICA DE SUBSTITUIÇÃO ---
+        let targetSlotLabel;
+        if (card.type === 'value') {
+            targetSlotLabel = playerState.playedCards.value.length === 0 ? 'Valor 1' : 'Valor 2';
+        } else {
+            const effectNameToApply = options.isIndividualLock ? options.effectNameToApply : card.name;
+            const scoreEffectCategory = ['Mais', 'Menos'];
+            const moveEffectCategory = ['Sobe', 'Desce', 'Pula'];
+            let isScoreEffect = scoreEffectCategory.includes(effectNameToApply) || (card.name === 'Reversus' && options.type === 'score');
+            
+            if (isScoreEffect) {
+                targetSlotLabel = 'Pontuação';
+                const cardToReplaceIndex = cardDestinationPlayer.playedCards.effect.findIndex(c => scoreEffectCategory.includes(c.name) || (c.name === 'Reversus' && c.reversedEffectType === 'score'));
+                if (cardToReplaceIndex > -1) {
+                    const [removedCard] = cardDestinationPlayer.playedCards.effect.splice(cardToReplaceIndex, 1);
+                    room.gameState.discardPiles.effect.push(removedCard);
+                }
+            } else {
+                targetSlotLabel = 'Movimento';
+                const cardToReplaceIndex = cardDestinationPlayer.playedCards.effect.findIndex(c => moveEffectCategory.includes(c.name) || (c.name === 'Reversus' && c.reversedEffectType === 'movement'));
+                if (cardToReplaceIndex > -1) {
+                    const [removedCard] = cardDestinationPlayer.playedCards.effect.splice(cardToReplaceIndex, 1);
+                    room.gameState.discardPiles.effect.push(removedCard);
+                }
+            }
+
+            if (card.name === 'Reversus Total' && !options.isIndividualLock) {
+                targetSlotLabel = 'Reversus T.';
+            }
+        }
+        
+        io.to(roomId).emit('cardPlayedAnimation', {
+            casterId: player.playerId,
+            targetId: targetId,
+            card: card,
+            targetSlotLabel: targetSlotLabel
+        });
+
+        // --- ATUALIZAÇÃO DO ESTADO DO JOGO ---
         if (card.type === 'value') {
             playerState.playedCards.value.push(card);
             playerState.playedValueCardThisTurn = true;
             playerState.nextResto = card;
             room.gameState.log.unshift({ type: 'system', message: `${playerState.name} jogou a carta de valor ${card.name}.` });
         } else {
-            // Rastreamento de maestria
-            if (card.name === 'Reversus') {
-                db.incrementMastery(player.user.uuid, 'reversusPlayed');
-            }
-        
-            const cardDestinationPlayer = room.gameState.players[targetId];
             if (options.isIndividualLock) card.isLocked = true;
             if (card.name === 'Pula' && options.targetPath !== undefined) cardDestinationPlayer.targetPathForPula = options.targetPath;
             if (card.name === 'Reversus') card.reversedEffectType = options.type;
@@ -540,7 +649,7 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
         if (player) {
-            io.to(roomId).emit('lobbyChatMessage', { speaker: player.user.name, message });
+            io.to(roomId).emit('lobbyChatMessage', { speaker: player.username, message });
         }
     });
 
@@ -550,8 +659,8 @@ io.on('connection', (socket) => {
         const player = room?.players.find(p => p.id === socket.id);
         if (player && room.gameState) {
             const sanitizedMessage = String(message).substring(0, 150);
-            room.gameState.log.unshift({ type: 'dialogue', speaker: player.user.name, message: sanitizedMessage });
-            io.to(roomId).emit('chatMessage', { speaker: player.user.name, message: sanitizedMessage });
+            room.gameState.log.unshift({ type: 'dialogue', speaker: player.username, message: sanitizedMessage });
+            io.to(roomId).emit('chatMessage', { speaker: player.username, message: sanitizedMessage });
         }
     });
 
@@ -564,24 +673,30 @@ io.on('connection', (socket) => {
         if (!disconnectedPlayer) return;
 
         if (room.gameStarted && room.gameState) {
-            const playerState = room.gameState.players[disconnectedPlayer.playerId];
-            if (playerState && !playerState.isEliminated) {
-                playerState.isEliminated = true;
-                room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.user.name} se desconectou e foi eliminado.`});
-                const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
-                if (activePlayers.length <= 1) {
-                    io.to(roomId).emit('gameAborted', { message: 'A partida terminou devido a desconexões.' });
-                    checkGameEnd(room); // Check for winner and update stats
-                } else {
-                    if (room.gameState.currentPlayer === disconnectedPlayer.playerId) {
-                        let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
-                        let nextIndex = currentIndex;
-                        do {
-                            nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
-                        } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
-                        room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+            if (room.mode === 'duo') {
+                io.to(roomId).emit('gameAborted', { message: `O jogador ${disconnectedPlayer.username} se desconectou. A partida em dupla foi encerrada.` });
+                delete rooms[roomId];
+            } else {
+                const playerState = room.gameState.players[disconnectedPlayer.playerId];
+                if (playerState && !playerState.isEliminated) {
+                    playerState.isEliminated = true;
+                    room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} se desconectou e foi eliminado.`});
+                    const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
+                    if (activePlayers.length <= 1) {
+                        const winnerName = activePlayers.length === 1 ? room.gameState.players[activePlayers[0]].name : "Ninguém";
+                        io.to(roomId).emit('gameOver', `${winnerName} venceu por W.O.!`);
+                        delete rooms[roomId];
+                    } else {
+                       if (room.gameState.currentPlayer === disconnectedPlayer.playerId) {
+                           let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
+                           let nextIndex = currentIndex;
+                           do {
+                               nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
+                           } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
+                           room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+                       }
+                       broadcastGameState(roomId);
                     }
-                    broadcastGameState(roomId);
                 }
             }
         } else {
