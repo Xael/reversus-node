@@ -1,159 +1,251 @@
-const fs = require('fs');
-const path = require('path');
+// db.js - Adaptador de Banco de Dados PostgreSQL para Reversus
+const { Pool } = require('pg');
 
-const DB_PATH = path.join(__dirname, 'database.json');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  // Descomente a linha abaixo se seu provedor de nuvem exigir SSL
+  // ssl: { rejectUnauthorized: false } 
+});
 
-// Garante que o arquivo de banco de dados exista na inicialização
-function initializeDatabase() {
-    if (!fs.existsSync(DB_PATH)) {
-        fs.writeFileSync(DB_PATH, JSON.stringify({}), 'utf8');
-    }
+// --- ESTRUTURA DE DADOS ---
+
+const TITLES = {
+    // Linha "Cartas e Estratégia"
+    'aprendiz_resto': { name: 'Aprendiz do Resto', line: 'Cartas', unlocks: { level: 2, victories: 1 } },
+    'jogador_invertido': { name: 'Jogador Invertido', line: 'Cartas', unlocks: { level: 5, victories: 5 } },
+    'cartomante_sorte': { name: 'Cartomante da Sorte', line: 'Cartas', unlocks: { level: 8, victories: 10 } },
+    'tatico_reverso': { name: 'Tático do Reverso', line: 'Cartas', unlocks: { level: 10, victories: 20 } },
+    'estrategista_tabuleiro': { name: 'Estrategista do Tabuleiro', line: 'Cartas', unlocks: { level: 15, victories: 30 } },
+    'mestre_resto': { name: 'Mestre do Resto', line: 'Cartas', unlocks: { level: 20, victories: 50 } },
+    'lorde_reversus': { name: 'Lorde Reversus', line: 'Cartas', unlocks: { level: 30, victories: 75, achievement: 'reversum_win' } },
+    'arquiteto_caos': { name: 'Arquiteto do Caos', line: 'Cartas', unlocks: { level: 40, victories: 100, achievement: 'true_end_beta' } },
+    'soberano_tabuleiro': { name: 'Soberano do Tabuleiro', line: 'Cartas', unlocks: { level: 50, victories: 150, achievement: 'true_end_final' } },
+    'eterno_reversus': { name: 'Eterno Reversus', line: 'Cartas', unlocks: { level: 75, victories: 200, achievement: 'inversus_win' } },
+
+    // Linha "Tabuleiro e Caminhos" - Desbloqueio por nível
+    'peao_errante': { name: 'Peão Errante', line: 'Tabuleiro', unlocks: { level: 3 } },
+    'viajante_casas': { name: 'Viajante das Casas', line: 'Tabuleiro', unlocks: { level: 7 } },
+    'explorador_caminhos': { name: 'Explorador de Caminhos', line: 'Tabuleiro', unlocks: { level: 12 } },
+    'guardiao_cores': { name: 'Guardião das Cores', line: 'Tabuleiro', unlocks: { level: 18 } },
+    'portador_destino': { name: 'Portador do Destino', line: 'Tabuleiro', unlocks: { level: 25 } },
+    'domador_efeitos': { name: 'Domador de Efeitos', line: 'Tabuleiro', unlocks: { level: 35 } },
+    'senhor_espacos': { name: 'Senhor dos Espaços', line: 'Tabuleiro', unlocks: { level: 45 } },
+    'comandante_caminhos': { name: 'Comandante dos Caminhos', line: 'Tabuleiro', unlocks: { level: 55 } },
+    'arquimago_rotas': { name: 'Arquimago das Rotas', line: 'Tabuleiro', unlocks: { level: 65 } },
+    'deus_tabuleiro': { name: 'Deus do Tabuleiro', line: 'Tabuleiro', unlocks: { level: 80 } },
+
+    // Linha "Competitiva / PvP" - Desbloqueio por vitórias
+    'recruta': { name: 'Recruta', line: 'PvP', unlocks: { victories: 1 } },
+    'desafiante': { name: 'Desafiante', line: 'PvP', unlocks: { victories: 10 } },
+    'combatente': { name: 'Combatente', line: 'PvP', unlocks: { victories: 25 } },
+    'veterano': { name: 'Veterano', line: 'PvP', unlocks: { victories: 50 } },
+    'campeao': { name: 'Campeão', line: 'PvP', unlocks: { victories: 75 } },
+    'lenda': { name: 'Lenda', line: 'PvP', unlocks: { victories: 100 } },
+    'ascendente': { name: 'Ascendente', line: 'PvP', unlocks: { victories: 125 } },
+    'imortal': { name: 'Imortal', line: 'PvP', unlocks: { victories: 150 } },
+    'tita': { name: 'Titã', line: 'PvP', unlocks: { victories: 175 } },
+    'supremo_reversus': { name: 'Supremo Reversus', line: 'PvP', unlocks: { victories: 250 } },
+};
+
+
+// --- HELPERS ---
+function levelFromXp(xp) {
+  if (!xp || xp < 100) return 1;
+  return Math.floor(1 + Math.sqrt(xp / 100));
 }
 
-// Lê o banco de dados do arquivo
-function readDb() {
-    try {
-        const data = fs.readFileSync(DB_PATH, 'utf8');
-        return JSON.parse(data);
-    } catch (error) {
-        console.error("Erro ao ler o banco de dados, retornando um objeto vazio.", error);
-        return {};
+// --- CRIAÇÃO DO ESQUEMA DO BANCO ---
+async function ensureSchema() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const sql = `
+      CREATE TABLE IF NOT EXISTS users (
+        id            SERIAL PRIMARY KEY,
+        google_id     TEXT UNIQUE NOT NULL,
+        username      TEXT NOT NULL,
+        avatar_url    TEXT,
+        created_at    TIMESTAMPTZ DEFAULT now(),
+        xp            INT DEFAULT 0,
+        level         INT DEFAULT 1,
+        victories     INT DEFAULT 0,
+        defeats       INT DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS user_match_history (
+        id         SERIAL PRIMARY KEY,
+        user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        outcome    TEXT NOT NULL CHECK (outcome IN ('Vitória','Derrota')),
+        mode       TEXT NOT NULL,
+        opponents  TEXT NOT NULL,
+        date       TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS titles (
+        id          SERIAL PRIMARY KEY,
+        code        TEXT UNIQUE NOT NULL,
+        name        TEXT NOT NULL,
+        line        TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS user_titles (
+        user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title_id    INT NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+        earned_at   TIMESTAMPTZ DEFAULT now(),
+        PRIMARY KEY (user_id, title_id)
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
+    `;
+    await client.query(sql);
+
+    // Semeia a tabela de títulos
+    for (const [code, data] of Object.entries(TITLES)) {
+        await client.query(
+            `INSERT INTO titles (code, name, line) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING`,
+            [code, data.name, data.line]
+        );
     }
+
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
-// Escreve no banco de dados
-function writeDb(data) {
-    try {
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2), 'utf8');
-    } catch (error) {
-        console.error("Erro ao escrever no banco de dados.", error);
-    }
+// --- API DO BANCO DE DADOS ---
+
+async function findOrCreateUser(googlePayload) {
+  const { sub: googleId, name, picture: avatarUrl } = googlePayload;
+  
+  // Primeiro, tenta encontrar o usuário
+  let res = await pool.query(`SELECT * FROM users WHERE google_id = $1`, [googleId]);
+  
+  if (res.rows.length === 0) {
+    // Se não encontrar, cria um novo
+    res = await pool.query(
+      `INSERT INTO users (google_id, username, avatar_url) VALUES ($1, $2, $3)
+       RETURNING *`,
+      [googleId, name, avatarUrl]
+    );
+  }
+  
+  return res.rows[0];
 }
 
-// Função para encontrar um usuário ou criar um novo se ele não existir
-async function findOrCreateUser({ uuid, name }) {
-    const db = readDb();
+async function addXp(googleId, amount) {
+  const { rows } = await pool.query(`SELECT id, xp FROM users WHERE google_id = $1`, [googleId]);
+  if (!rows[0]) return;
 
-    if (db[uuid]) {
-        // Atualiza o nome se o jogador decidir mudá-lo (lógica futura)
-        if (db[uuid].name !== name) {
-            db[uuid].name = name;
-            writeDb(db);
-        }
-        return db[uuid];
-    }
+  const newXp = (rows[0].xp || 0) + Number(amount || 0);
+  const newLevel = levelFromXp(newXp);
 
-    // Cria um novo usuário com estatísticas padrão
-    const newUser = {
-        uuid: uuid,
-        name: name,
-        picture: null, // Contas de convidado não têm foto
-        stats: {
-            wins: 0,
-            losses: 0,
-            xp: 0,
-            level: 1
-        },
-        titles: ["Novato"],
-        masteries: {
-            reversusPlayed: 0,
-            totalGames: 0,
-        },
-        matchHistory: []
-    };
-
-    db[uuid] = newUser;
-    writeDb(db);
-    return newUser;
+  await pool.query(
+    `UPDATE users SET xp = $1, level = $2 WHERE id = $3`,
+    [newXp, newLevel, rows[0].id]
+  );
 }
 
-// Adiciona XP e verifica se o jogador subiu de nível
-function addXp(uuid, amount) {
-    const db = readDb();
-    const user = db[uuid];
-    if (user) {
-        user.stats.xp = (user.stats.xp || 0) + amount;
-        
-        let xpForNextLevel = 150 * user.stats.level;
-        while (user.stats.xp >= xpForNextLevel) {
-            user.stats.level++;
-            user.stats.xp -= xpForNextLevel;
-            xpForNextLevel = 150 * user.stats.level;
-            console.log(`${user.name} subiu para o nível ${user.stats.level}!`);
-            
-            // Concede título por nível
-            if (user.stats.level === 10 && !user.titles.includes("Veterano do Reversus")) {
-                user.titles.push("Veterano do Reversus");
+async function addMatchToHistory(googleId, matchData) {
+  const { rows } = await pool.query(`SELECT id FROM users WHERE google_id = $1`, [googleId]);
+  if (!rows[0]) return;
+  const userId = rows[0].id;
+
+  const { outcome, mode, opponents } = matchData;
+  await pool.query(
+    `INSERT INTO user_match_history (user_id, outcome, mode, opponents) VALUES ($1, $2, $3, $4)`,
+    [userId, outcome, mode, opponents || 'N/A']
+  );
+
+  // Atualiza contadores de vitórias/derrotas
+  if (outcome === 'Vitória') {
+    await pool.query(`UPDATE users SET victories = victories + 1 WHERE id = $1`, [userId]);
+  } else if (outcome === 'Derrota') {
+    await pool.query(`UPDATE users SET defeats = defeats + 1 WHERE id = $1`, [userId]);
+  }
+}
+
+async function checkAndGrantTitles(googleId) {
+    const userRes = await pool.query(`SELECT * FROM users WHERE google_id = $1`, [googleId]);
+    if (!userRes.rows[0]) return;
+    const user = userRes.rows[0];
+
+    const achievementsRes = await pool.query(
+      `SELECT a.code FROM user_achievements ua JOIN achievements a ON ua.achievement_id = a.id WHERE ua.user_id = $1`,
+      [user.id]
+    );
+    const userAchievements = new Set(achievementsRes.rows.map(r => r.code));
+
+    for (const [code, titleData] of Object.entries(TITLES)) {
+        const { level, victories, achievement } = titleData.unlocks;
+        let meetsCriteria = true;
+        if (level && user.level < level) meetsCriteria = false;
+        if (victories && user.victories < victories) meetsCriteria = false;
+        if (achievement && !userAchievements.has(achievement)) meetsCriteria = false;
+
+        if (meetsCriteria) {
+            const titleRes = await pool.query(`SELECT id FROM titles WHERE code = $1`, [code]);
+            if (titleRes.rows[0]) {
+                const titleId = titleRes.rows[0].id;
+                await pool.query(
+                    `INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+                    [user.id, titleId]
+                );
             }
         }
-        writeDb(db);
     }
 }
 
-// Incrementa uma maestria específica e verifica se um título foi ganho
-function incrementMastery(uuid, masteryKey) {
-    const db = readDb();
-    const user = db[uuid];
-    if (user) {
-        if (!user.masteries) user.masteries = {};
-        user.masteries[masteryKey] = (user.masteries[masteryKey] || 0) + 1;
-
-        // Verifica se ganhou o título de "Mestre do Reversus"
-        if (masteryKey === 'reversusPlayed' && user.masteries.reversusPlayed >= 100 && !user.titles.includes("Mestre do Reversus")) {
-            user.titles.push("Mestre do Reversus");
-            console.log(`${user.name} ganhou o título "Mestre do Reversus"!`);
-        }
-        writeDb(db);
-    }
-}
-
-// Adiciona uma partida ao histórico do jogador
-function addMatchToHistory(uuid, matchData) {
-    const db = readDb();
-    const user = db[uuid];
-    if (user) {
-        if (!user.matchHistory) user.matchHistory = [];
-        user.matchHistory.unshift(matchData); // Adiciona no início
-        // Mantém o histórico com um tamanho máximo de 20 partidas
-        if (user.matchHistory.length > 20) {
-            user.matchHistory.pop();
-        }
-        // Incrementa o total de jogos
-        user.masteries.totalGames = (user.masteries.totalGames || 0) + 1;
-        writeDb(db);
-    }
-}
-
-
-// Retorna os 10 melhores jogadores ordenados por vitórias
 async function getTopTenPlayers() {
-    const db = readDb();
-    const players = Object.values(db);
-
-    // Ordena os jogadores pelo número de vitórias (em ordem decrescente)
-    players.sort((a, b) => (b.stats.wins || 0) - (a.stats.wins || 0));
-
-    // Retorna apenas o top 10
-    return players.slice(0, 10).map(p => ({
-        name: p.name,
-        wins: p.stats.wins,
-    }));
+  const { rows } = await pool.query(
+    `SELECT username, avatar_url, victories
+     FROM users
+     ORDER BY victories DESC, id ASC
+     LIMIT 10`
+  );
+  return rows;
 }
 
-// Retorna o perfil completo de um usuário
-async function getUserProfile(uuid) {
-    const db = readDb();
-    return db[uuid] || null;
+async function getUserProfile(googleId) {
+  const userRes = await pool.query(`SELECT * FROM users WHERE google_id = $1`, [googleId]);
+  const user = userRes.rows[0];
+  if (!user) return null;
+
+  const titlesRes = await pool.query(
+    `SELECT t.name, t.line
+     FROM user_titles ut
+     JOIN titles t ON t.id = ut.title_id
+     WHERE ut.user_id = $1
+     ORDER BY t.line, t.id`,
+    [user.id]
+  );
+
+  const historyRes = await pool.query(
+    `SELECT outcome, mode, opponents, date
+     FROM user_match_history
+     WHERE user_id = $1
+     ORDER BY date DESC
+     LIMIT 15`,
+    [user.id]
+  );
+
+  return {
+    ...user,
+    titles: titlesRes.rows,
+    history: historyRes.rows
+  };
 }
 
-// Inicializa o banco de dados na primeira vez que o módulo é carregado
-initializeDatabase();
 
 module.exports = {
-    findOrCreateUser,
-    getTopTenPlayers,
-    getUserProfile,
-    addXp,
-    incrementMastery,
-    addMatchToHistory
+  ensureSchema,
+  findOrCreateUser,
+  addXp,
+  addMatchToHistory,
+  getTopTenPlayers,
+  getUserProfile,
+  checkAndGrantTitles
 };
