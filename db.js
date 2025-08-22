@@ -45,6 +45,20 @@ const TITLES = {
     'imortal': { name: 'Imortal', line: 'PvP', unlocks: { victories: 150 } },
     'tita': { name: 'Titã', line: 'PvP', unlocks: { victories: 175 } },
     'supremo_reversus': { name: 'Supremo Reversus', line: 'PvP', unlocks: { victories: 250 } },
+
+    // Títulos de Evento
+    'event_jan': { name: 'O Visionário', line: 'Evento' },
+    'event_feb': { name: 'Unidor de Restos', line: 'Evento' },
+    'event_mar': { name: 'Abençoado pelo Resto', line: 'Evento' },
+    'event_apr': { name: 'Guardião das Runas', line: 'Evento' },
+    'event_may': { name: 'Sombras no Tabuleiro', line: 'Evento' },
+    'event_jun': { name: 'O Ardente', line: 'Evento' },
+    'event_jul': { name: 'Ladrão de Restos', line: 'Evento' },
+    'event_aug': { name: 'O Eterno', line: 'Evento' },
+    'event_sep': { name: 'Caçador de Segredos', line: 'Evento' },
+    'event_oct': { name: 'Feiticeiro do Tabuleiro', line: 'Evento' },
+    'event_nov': { name: 'Congelador de Destinos', line: 'Evento' },
+    'event_dec': { name: 'Luz do Fim de Ano', line: 'Evento' },
 };
 
 
@@ -180,6 +194,7 @@ async function checkAndGrantTitles(googleId) {
     const userAchievements = new Set(achievementsRes.rows.map(r => r.code));
 
     for (const [code, titleData] of Object.entries(TITLES)) {
+        if (!titleData.unlocks) continue; // Pula títulos de evento
         const { level, victories, achievement } = titleData.unlocks;
         let meetsCriteria = true;
         if (level && user.level < level) meetsCriteria = false;
@@ -187,17 +202,25 @@ async function checkAndGrantTitles(googleId) {
         if (achievement && !userAchievements.has(achievement)) meetsCriteria = false;
 
         if (meetsCriteria) {
-            const titleRes = await pool.query(`SELECT id FROM titles WHERE code = $1`, [code]);
-            if (titleRes.rows[0]) {
-                const titleId = titleRes.rows[0].id;
-                await pool.query(
-                    `INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-                    [user.id, titleId]
-                );
-            }
+            await grantTitleByCode(user.id, code);
         }
     }
 }
+
+async function grantTitleByCode(userId, titleCode) {
+    const titleRes = await pool.query(`SELECT id FROM titles WHERE code = $1`, [titleCode]);
+    if (titleRes.rows[0]) {
+        const titleId = titleRes.rows[0].id;
+        await pool.query(
+            `INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [userId, titleId]
+        );
+        console.log(`Título ${titleCode} concedido ao usuário ${userId}`);
+    } else {
+        console.error(`Tentativa de conceder um código de título inexistente: ${titleCode}`);
+    }
+}
+
 
 async function getTopTenPlayers() {
   const { rows } = await pool.query(
@@ -247,5 +270,6 @@ module.exports = {
   addMatchToHistory,
   getTopTenPlayers,
   getUserProfile,
-  checkAndGrantTitles
+  checkAndGrantTitles,
+  grantTitleByCode
 };
