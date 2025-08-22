@@ -232,6 +232,5 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`--- SERVIDOR DE JOGO REVERSUS ONLINE ---`);
     console.log(`O servidor está rodando na porta: ${PORT}`);
-    // Testa a conexão com o banco de dados na inicialização
-    db.testConnection();
+    // A conexão com o banco será testada na primeira interação do usuário.
 });
