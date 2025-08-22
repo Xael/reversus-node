@@ -48,6 +48,38 @@ function broadcastGameState(roomId) {
     });
 }
 
+function handleLeaveRoom(socket) {
+    const roomId = socket.data.roomId;
+    if (!roomId || !rooms[roomId]) return;
+
+    const room = rooms[roomId];
+    const playerIndex = room.players.findIndex(p => p.id === socket.id);
+
+    if (playerIndex !== -1) {
+        room.players.splice(playerIndex, 1);
+        console.log(`Player ${socket.id} left room ${roomId}`);
+    }
+
+    socket.leave(roomId);
+    delete socket.data.roomId;
+
+    if (room.players.length === 0) {
+        console.log(`Room ${roomId} is empty, deleting.`);
+        delete rooms[roomId];
+    } else {
+        // If the host left, assign a new host
+        if (room.hostId === socket.id) {
+            room.hostId = room.players[0].id;
+            console.log(`New host for room ${roomId} is ${room.hostId}`);
+        }
+        // Update remaining players in the lobby
+        io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
+    }
+
+    // Update everyone's room list
+    io.emit('roomList', getPublicRoomsList());
+}
+
 
 io.on('connection', (socket) => {
     console.log(`Jogador conectado: ${socket.id}`);
@@ -183,19 +215,23 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ... (restante da lógica de jogo PvP como 'startGame', 'playCard', 'endTurn', 'disconnect', etc.)
+    socket.on('leaveRoom', () => {
+        handleLeaveRoom(socket);
+    });
+
+    // ... (restante da lógica de jogo PvP como 'startGame', 'playCard', 'endTurn', etc.)
     // A lógica de final de jogo no PvP precisará ser adaptada para chamar a função de registro de partida.
-
-    const handleDisconnect = () => {
+    
+    socket.on('disconnect', () => {
         console.log(`Jogador desconectado: ${socket.id}`);
-        // A lógica de desconexão permanece a mesma...
-    };
-
-    socket.on('disconnect', handleDisconnect);
+        handleLeaveRoom(socket);
+    });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`--- SERVIDOR DE JOGO REVERSUS ONLINE ---`);
     console.log(`O servidor está rodando na porta: ${PORT}`);
+    // Testa a conexão com o banco de dados na inicialização
+    db.testConnection();
 });
