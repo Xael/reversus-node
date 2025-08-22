@@ -4,7 +4,7 @@ const { Pool } = require('pg');
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   // Descomente a linha abaixo se seu provedor de nuvem exigir SSL
-  // ssl: { rejectUnauthorized: false } 
+  ssl: { rejectUnauthorized: false } 
 });
 
 // --- ESTRUTURA DE DADOS ---
