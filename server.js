@@ -4,6 +4,12 @@ const http = require('http');
 const { Server } = require("socket.io");
 const { OAuth2Client } = require('google-auth-library');
 const db = require('./db.js');
+// Import game logic for server-side game state creation
+const { createDeck } = require('./js/game-logic/deck.js');
+const { generateBoardPaths } = require('./js/game-logic/board.js');
+const config = require('./js/core/config.js');
+const { shuffle } = require('./js/core/utils.js');
+
 
 const app = express();
 const server = http.createServer(app);
@@ -54,12 +60,69 @@ function handleLeaveRoom(socket) {
 
     const room = rooms[roomId];
     const playerIndex = room.players.findIndex(p => p.id === socket.id);
+    const disconnectedPlayerInfo = room.players[playerIndex];
 
-    if (playerIndex !== -1) {
-        room.players.splice(playerIndex, 1);
-        console.log(`Player ${socket.id} left room ${roomId}`);
+    if (!disconnectedPlayerInfo) return; // Player wasn't in the room
+
+    // --- NEW LOGIC FOR IN-GAME DISCONNECTS ---
+    if (room.gameStarted && room.gameState) {
+        const disconnectedPlayerId = disconnectedPlayerInfo.playerId;
+        const gameState = room.gameState;
+        
+        // Check game mode to decide action
+        if (gameState.gameMode === 'solo-2p' || gameState.gameMode === 'duo') {
+            // End the game for 1v1 and 2v2 modes
+            console.log(`Player disconnected in a ${gameState.gameMode} match. Ending game.`);
+            const remainingPlayers = room.players.filter(p => p.id !== socket.id);
+            const winnerNames = remainingPlayers.map(p => p.username).join(' e ');
+            
+            io.to(roomId).emit('gameOver', { message: `${winnerNames} venceu(ram) pois um oponente se desconectou.` });
+            delete rooms[roomId]; // Clean up the room
+
+        } else { // For 3p and 4p modes, continue the game
+            console.log(`Player ${disconnectedPlayerId} disconnected in a ${gameState.gameMode} match. Game continues.`);
+            // Mark player as eliminated
+            if (gameState.players[disconnectedPlayerId]) {
+                gameState.players[disconnectedPlayerId].isEliminated = true;
+                gameState.log.unshift({ type: 'system', message: `Jogador ${disconnectedPlayerInfo.username} se desconectou e foi removido da partida.` });
+            }
+
+            // Remove player from the room's active player list
+            room.players.splice(playerIndex, 1);
+            socket.leave(roomId);
+            
+            // If it was the disconnected player's turn, advance to the next active player
+            if (gameState.currentPlayer === disconnectedPlayerId) {
+                let currentIndex = gameState.playerIdsInGame.indexOf(gameState.currentPlayer);
+                let nextPlayerFound = false;
+                for (let i = 1; i < gameState.playerIdsInGame.length; i++) {
+                    const nextIndex = (currentIndex + i) % gameState.playerIdsInGame.length;
+                    const nextPlayerId = gameState.playerIdsInGame[nextIndex];
+                    if (!gameState.players[nextPlayerId].isEliminated) {
+                        gameState.currentPlayer = nextPlayerId;
+                        gameState.log.unshift({ type: 'system', message: `É a vez de ${gameState.players[nextPlayerId].name}.` });
+                        nextPlayerFound = true;
+                        break;
+                    }
+                }
+                 if (!nextPlayerFound) { // Should only happen if only one is left
+                    const winner = Object.values(gameState.players).find(p => !p.isEliminated);
+                    if (winner) {
+                        io.to(roomId).emit('gameOver', { message: `${winner.name} venceu a partida!` });
+                        delete rooms[roomId];
+                        return;
+                    }
+                }
+            }
+            broadcastGameState(roomId);
+        }
+        return; // End function here for in-game disconnects
     }
+    // --- END OF NEW LOGIC ---
 
+    // Original logic for leaving a lobby (game not started)
+    room.players.splice(playerIndex, 1)[0];
+    console.log(`Player ${socket.id} (${disconnectedPlayerInfo.username}) left room ${roomId}`);
     socket.leave(roomId);
     delete socket.data.roomId;
 
@@ -67,16 +130,13 @@ function handleLeaveRoom(socket) {
         console.log(`Room ${roomId} is empty, deleting.`);
         delete rooms[roomId];
     } else {
-        // If the host left, assign a new host
         if (room.hostId === socket.id) {
             room.hostId = room.players[0].id;
             console.log(`New host for room ${roomId} is ${room.hostId}`);
         }
-        // Update remaining players in the lobby
         io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
     }
 
-    // Update everyone's room list
     io.emit('roomList', getPublicRoomsList());
 }
 
@@ -199,13 +259,28 @@ io.on('connection', (socket) => {
             socket.data.roomId = roomId;
             socket.join(roomId);
             
+            const assignedPlayerIds = new Set(room.players.map(p => p.playerId));
+            let newPlayerId = null;
+            for (let i = 1; i <= 4; i++) {
+                const potentialId = `player-${i}`;
+                if (!assignedPlayerIds.has(potentialId)) {
+                    newPlayerId = potentialId;
+                    break;
+                }
+            }
+            
+            if (!newPlayerId) {
+                return socket.emit('error', 'A sala está cheia ou ocorreu um erro ao atribuir jogador.');
+            }
+
             const newPlayer = {
                 id: socket.id,
                 username: socket.data.userProfile.username,
-                googleId: socket.data.userProfile.googleId, // importante para o futuro
-                playerId: `player-${room.players.length + 1}`
+                googleId: socket.data.userProfile.googleId,
+                playerId: newPlayerId
             };
-            socket.data.userProfile.playerId = newPlayer.playerId; // Associa playerId ao perfil
+
+            socket.data.userProfile.playerId = newPlayer.playerId;
             
             room.players.push(newPlayer);
             io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
@@ -218,10 +293,75 @@ io.on('connection', (socket) => {
     socket.on('leaveRoom', () => {
         handleLeaveRoom(socket);
     });
-
-    // ... (restante da lógica de jogo PvP como 'startGame', 'playCard', 'endTurn', etc.)
-    // A lógica de final de jogo no PvP precisará ser adaptada para chamar a função de registro de partida.
     
+    socket.on('changeMode', (newMode) => {
+        const roomId = socket.data.roomId;
+        if (!roomId || !rooms[roomId]) return;
+        const room = rooms[roomId];
+        // Only host can change mode
+        if (socket.id !== room.hostId) return;
+
+        room.mode = newMode;
+        console.log(`Room ${roomId} mode changed to ${newMode}`);
+        io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
+    });
+
+    socket.on('startGame', () => {
+        const roomId = socket.data.roomId;
+        if (!roomId || !rooms[roomId]) return;
+        const room = rooms[roomId];
+        if (socket.id !== room.hostId) return;
+
+        // Create initial game state here... (simplified version)
+        // This should mirror the logic from initializeGame in game-controller.js
+        console.log(`Starting game in room ${roomId} with mode ${room.mode}`);
+        room.gameStarted = true;
+        // Logic to create gameState based on room.mode and room.players
+        // This is a simplified example; a full implementation would be needed.
+        const playerIdsInGame = room.players.map(p => p.playerId);
+        const players = Object.fromEntries(
+            room.players.map(p => {
+                 const playerConfig = config.PLAYER_CONFIG[p.playerId];
+                 const playerObject = {
+                    ...playerConfig,
+                    id: p.playerId,
+                    name: p.username,
+                    isHuman: true,
+                    pathId: playerIdsInGame.indexOf(p.playerId),
+                    position: 1,
+                    hand: [],
+                    resto: null,
+                    nextResto: null,
+                    effects: { score: null, movement: null },
+                    playedCards: { value: [], effect: [] },
+                    playedValueCardThisTurn: false,
+                    isEliminated: false,
+                 };
+                 return [p.playerId, playerObject];
+            })
+        );
+        
+        const gameState = {
+            players,
+            playerIdsInGame,
+            decks: { value: shuffle(createDeck(config.VALUE_DECK_CONFIG, 'value')), effect: shuffle(createDeck(config.EFFECT_DECK_CONFIG, 'effect')) },
+            discardPiles: { value: [], effect: [] },
+            boardPaths: generateBoardPaths(),
+            gamePhase: 'setup',
+            gameMode: room.mode,
+            isPvp: true,
+            currentPlayer: 'player-1',
+            turn: 1,
+            log: [],
+            // ... other initial state properties
+        };
+        room.gameState = gameState;
+        
+        io.to(roomId).emit('gameStarted', gameState);
+        io.emit('roomList', getPublicRoomsList()); // Room is no longer public
+        // TODO: Need to implement the full game logic loop on the server
+    });
+
     socket.on('disconnect', () => {
         console.log(`Jogador desconectado: ${socket.id}`);
         handleLeaveRoom(socket);
