@@ -119,6 +119,17 @@ async function ensureSchema() {
         CONSTRAINT check_users CHECK (user_one_id < user_two_id)
       );
 
+      CREATE TABLE IF NOT EXISTS friend_requests (
+          id SERIAL PRIMARY KEY,
+          sender_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          receiver_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at TIMESTAMPTZ DEFAULT now(),
+          UNIQUE(sender_id, receiver_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_receiver_id ON friend_requests (receiver_id);
+
+
       CREATE TABLE IF NOT EXISTS private_messages (
         id           SERIAL PRIMARY KEY,
         sender_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -300,21 +311,74 @@ async function searchUsers(query, currentUserId) {
 
 async function getFriendshipStatus(userId1, userId2) {
     const [lowId, highId] = [Math.min(userId1, userId2), Math.max(userId1, userId2)];
-    const { rows } = await pool.query(
-        `SELECT * FROM friends WHERE user_one_id = $1 AND user_two_id = $2`,
+    const friendsRes = await pool.query(
+        `SELECT 1 FROM friends WHERE user_one_id = $1 AND user_two_id = $2`,
         [lowId, highId]
     );
-    if (rows.length > 0) return 'friends';
+    if (friendsRes.rows.length > 0) return 'friends';
+
+    const requestRes = await pool.query(
+        `SELECT 1 FROM friend_requests 
+         WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)`,
+        [userId1, userId2]
+    );
+    if (requestRes.rows.length > 0) return 'pending';
+    
     return 'none';
 }
 
+async function sendFriendRequest(senderId, receiverId) {
+    if (senderId === receiverId) throw new Error("Cannot send friend request to self.");
+    const friendshipStatus = await getFriendshipStatus(senderId, receiverId);
+    if (friendshipStatus !== 'none') throw new Error("Friendship already exists or request is pending.");
 
-async function addFriend(userId1, userId2) {
-    const [lowId, highId] = [Math.min(userId1, userId2), Math.max(userId1, userId2)];
-    await pool.query(
-        'INSERT INTO friends (user_one_id, user_two_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [lowId, highId]
+    const { rows } = await pool.query(
+        'INSERT INTO friend_requests (sender_id, receiver_id) VALUES ($1, $2) RETURNING id',
+        [senderId, receiverId]
     );
+    return rows[0];
+}
+
+async function getPendingFriendRequests(userId) {
+    const { rows } = await pool.query(
+        `SELECT fr.id, fr.sender_id, u.username, u.avatar_url
+         FROM friend_requests fr
+         JOIN users u ON fr.sender_id = u.id
+         WHERE fr.receiver_id = $1 AND fr.status = 'pending'`,
+        [userId]
+    );
+    return rows;
+}
+
+async function respondToFriendRequest(requestId, respondingUserId, action) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const { rows } = await client.query(
+            "SELECT sender_id, receiver_id FROM friend_requests WHERE id = $1 AND status = 'pending'",
+            [requestId]
+        );
+        if (rows.length === 0 || rows[0].receiver_id !== respondingUserId) {
+            throw new Error("Request not found or user not authorized to respond.");
+        }
+        
+        const { sender_id, receiver_id } = rows[0];
+
+        if (action === 'accept') {
+            const [lowId, highId] = [Math.min(sender_id, receiver_id), Math.max(sender_id, receiver_id)];
+            await client.query('INSERT INTO friends (user_one_id, user_two_id) VALUES ($1, $2)', [lowId, highId]);
+        }
+        
+        await client.query('DELETE FROM friend_requests WHERE id = $1', [requestId]);
+        
+        await client.query('COMMIT');
+        return sender_id; // Return sender ID for notification
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
 }
 
 async function removeFriend(userId1, userId2) {
@@ -412,7 +476,8 @@ async function getUserProfile(googleId, requesterId = null) {
 
 module.exports = {
   ensureSchema, findOrCreateUser, addXp, addMatchToHistory, getTopPlayers,
-  getUserProfile, testConnection, searchUsers, addFriend, removeFriend, 
+  getUserProfile, testConnection, searchUsers, removeFriend, 
   getFriendsList, getFriendshipStatus, setSelectedTitle, 
-  savePrivateMessage, getPrivateMessageHistory, updateUserRankAndTitles, grantTitleByCode
+  savePrivateMessage, getPrivateMessageHistory, updateUserRankAndTitles, grantTitleByCode,
+  sendFriendRequest, getPendingFriendRequests, respondToFriendRequest
 };

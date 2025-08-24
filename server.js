@@ -123,11 +123,13 @@ io.on('connection', (socket) => {
     });
 
     socket.on('viewProfile', async ({ googleId }) => {
-        if (!socket.data.userProfile) return;
+        if (!socket.data.userProfile || !googleId) return;
         try {
+            // FIX: Use the provided googleId to get the correct profile
             const profileData = await db.getUserProfile(googleId, socket.data.userProfile.id);
             socket.emit('viewProfileData', profileData);
         } catch (error) {
+            console.error("View Profile Error:", error);
             socket.emit('error', 'Não foi possível carregar o perfil do jogador.');
         }
     });
@@ -168,9 +170,6 @@ io.on('connection', (socket) => {
             // 2. Atualizar o rank e conceder títulos de ranking
             await db.updateUserRankAndTitles(winnerUserId);
     
-            // 3. Conceder títulos por nível e vitórias gerais (se houver)
-            // await db.checkAndGrantTitles(winnerGoogleId); // This function was mentioned but not defined, can be added later
-    
         } catch (error) {
             console.error('Erro ao processar o fim do jogo:', error);
             socket.emit('error', 'Ocorreu um erro ao registrar sua vitória.');
@@ -189,15 +188,63 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('addFriend', async ({ targetUserId }) => {
+    socket.on('sendFriendRequest', async ({ targetUserId }) => {
         if (!socket.data.userProfile) return;
         try {
-            await db.addFriend(socket.data.userProfile.id, targetUserId);
-            // Atualiza a lista de amigos para ambos
-            const friendSocketId = onlineUsers.get(targetUserId);
-            if (friendSocketId) io.to(friendSocketId).emit('friendsList', await db.getFriendsList(targetUserId));
-            socket.emit('friendsList', await db.getFriendsList(socket.data.userProfile.id));
-        } catch(error) { console.error("Add Friend Error:", error); }
+            const senderProfile = socket.data.userProfile;
+            const request = await db.sendFriendRequest(senderProfile.id, targetUserId);
+            if (request) {
+                const targetSocketId = onlineUsers.get(targetUserId);
+                if (targetSocketId) {
+                    io.to(targetSocketId).emit('newFriendRequest', {
+                        id: request.id,
+                        sender_id: senderProfile.id,
+                        username: senderProfile.username,
+                        avatar_url: senderProfile.avatar_url
+                    });
+                }
+            }
+            socket.emit('requestSent');
+        } catch (error) {
+            console.error("Send Friend Request Error:", error);
+            socket.emit('error', 'Não foi possível enviar o pedido de amizade.');
+        }
+    });
+
+    socket.on('getPendingRequests', async () => {
+        if (!socket.data.userProfile) return;
+        try {
+            const requests = await db.getPendingFriendRequests(socket.data.userProfile.id);
+            socket.emit('pendingRequestsData', requests);
+        } catch (error) {
+            console.error("Get Pending Requests Error:", error);
+        }
+    });
+
+    socket.on('respondToRequest', async ({ requestId, action }) => {
+        if (!socket.data.userProfile || !['accept', 'decline'].includes(action)) return;
+        try {
+            const userId = socket.data.userProfile.id;
+            const senderId = await db.respondToFriendRequest(requestId, userId, action);
+            
+            if (senderId) {
+                // Notificar o remetente da resposta
+                const senderSocketId = onlineUsers.get(senderId);
+                if (senderSocketId) {
+                    io.to(senderSocketId).emit('friendRequestResponded', { username: socket.data.userProfile.username, action });
+                    // Atualizar a lista de amigos de ambos
+                    io.to(senderSocketId).emit('friendsList', await db.getFriendsList(senderId));
+                }
+                socket.emit('friendsList', await db.getFriendsList(userId));
+            }
+            // Atualizar a lista de pedidos pendentes para o usuário que respondeu
+            const requests = await db.getPendingFriendRequests(userId);
+            socket.emit('pendingRequestsData', requests);
+
+        } catch (error) {
+            console.error("Respond to Request Error:", error);
+            socket.emit('error', 'Não foi possível responder ao pedido.');
+        }
     });
 
     socket.on('removeFriend', async ({ targetUserId }) => {
@@ -230,9 +277,10 @@ io.on('connection', (socket) => {
             const messageData = { senderId, senderUsername, content, timestamp: new Date() };
             
             if (recipientSocketId) {
-                io.to(recipientSocketId).emit('privateMessage', messageData);
+                io.to(recipientSocketId).emit('privateMessage', { ...messageData, recipientId });
             }
 
+            // FIX: Send the message back to the sender so they can see it too
             socket.emit('privateMessage', { ...messageData, recipientId });
         } catch (error) {
             console.error("Send Message Error:", error);
@@ -251,13 +299,17 @@ io.on('connection', (socket) => {
             userSockets.delete(socket.id);
 
             // Notifica amigos que o usuário ficou offline
-            const friends = await db.getFriendsList(userId);
-            friends.forEach(friend => {
-                const friendSocketId = onlineUsers.get(friend.id);
-                if (friendSocketId) {
-                    io.to(friendSocketId).emit('friendStatusUpdate', { userId, isOnline: false });
-                }
-            });
+            try {
+                const friends = await db.getFriendsList(userId);
+                friends.forEach(friend => {
+                    const friendSocketId = onlineUsers.get(friend.id);
+                    if (friendSocketId) {
+                        io.to(friendSocketId).emit('friendStatusUpdate', { userId, isOnline: false });
+                    }
+                });
+            } catch (error) {
+                console.error("Error notifying friends on disconnect:", error);
+            }
         }
         
         const roomId = socket.data.roomId;
