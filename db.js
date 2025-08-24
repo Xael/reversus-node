@@ -150,15 +150,18 @@ async function ensureSchema() {
 // --- API DO BANCO DE DADOS ---
 
 async function findOrCreateUser(googlePayload) {
-  const { sub: googleId, name, picture: avatarUrl } = googlePayload;
+  const { sub: googleId, name, picture: avatarUrl, email } = googlePayload;
   
+  // Fallback para o prefixo do e-mail se o nome não estiver disponível no perfil do Google
+  const username = name || (email ? email.split('@')[0] : `user_${googleId.slice(0, 6)}`);
+
   let res = await pool.query(`SELECT * FROM users WHERE google_id = $1`, [googleId]);
   
   if (res.rows.length === 0) {
     res = await pool.query(
       `INSERT INTO users (google_id, username, avatar_url) VALUES ($1, $2, $3)
        RETURNING *`,
-      [googleId, name, avatarUrl]
+      [googleId, username, avatarUrl]
     );
   } else if (res.rows[0].is_banned) {
     throw new Error('User is banned');

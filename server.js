@@ -344,7 +344,7 @@ io.on('connection', (socket) => {
     console.log(`Jogador conectado: ${socket.id}`);
     db.ensureSchema().catch(console.error);
 
-    socket.on('google-login', async ({ token, email }) => {
+    socket.on('google-login', async ({ token }) => {
         try {
             const ticket = await client.verifyIdToken({ idToken: token, audience: GOOGLE_CLIENT_ID });
             const payload = ticket.getPayload();
