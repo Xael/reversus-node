@@ -35,7 +35,7 @@ function getLobbyDataForRoom(room) {
             username: p.username, 
             playerId: p.playerId,
             googleId: p.googleId,
-            title: p.title
+            title_code: p.title_code // Enviar o código do título
         })),
         mode: room.mode,
     };
@@ -85,7 +85,7 @@ io.on('connection', (socket) => {
             userSockets.set(socket.id, userProfile.id);
             
             socket.data.userProfile = userProfile;
-            socket.emit('loginSuccess', await db.getUserProfile(userProfile.google_id));
+            socket.emit('loginSuccess', await db.getUserProfile(userProfile.google_id, userProfile.id));
 
             // Notifica amigos que o usuário ficou online
             const friends = await db.getFriendsList(userProfile.id);
@@ -144,6 +144,39 @@ io.on('connection', (socket) => {
         }
     });
     
+    socket.on('gameFinished', async ({ winnerId, roomId, mode }) => {
+        if (!socket.data.userProfile) return;
+        const room = rooms[roomId];
+        if (!room) return;
+    
+        const winnerClient = room.players.find(p => p.playerId === winnerId);
+        // Only process if the winner is a real player with a profile
+        if (!winnerClient || !winnerClient.userProfile) return;
+    
+        try {
+            const winnerUserId = winnerClient.userProfile.id;
+            const winnerGoogleId = winnerClient.userProfile.google_id;
+    
+            // 1. Conceder XP, registrar vitória
+            await db.addXp(winnerGoogleId, 100);
+            await db.addMatchToHistory(winnerGoogleId, {
+                outcome: 'Vitória',
+                mode: `PVP ${mode}`,
+                opponents: 'Jogadores Online'
+            });
+    
+            // 2. Atualizar o rank e conceder títulos de ranking
+            await db.updateUserRankAndTitles(winnerUserId);
+    
+            // 3. Conceder títulos por nível e vitórias gerais (se houver)
+            // await db.checkAndGrantTitles(winnerGoogleId); // This function was mentioned but not defined, can be added later
+    
+        } catch (error) {
+            console.error('Erro ao processar o fim do jogo:', error);
+            socket.emit('error', 'Ocorreu um erro ao registrar sua vitória.');
+        }
+    });
+
     // --- EVENTOS SOCIAIS (AMIGOS E CHAT) ---
 
     socket.on('searchUsers', async ({ query }) => {

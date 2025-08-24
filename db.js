@@ -24,41 +24,21 @@ async function testConnection() {
 
 // --- ESTRUTURA DE DADOS ---
 const TITLES = {
-    // Linha "Cartas e Estratégia"
-    'aprendiz_resto': { name: 'Aprendiz do Resto', line: 'Cartas', unlocks: { level: 2, victories: 1 } },
-    'jogador_invertido': { name: 'Jogador Invertido', line: 'Cartas', unlocks: { level: 5, victories: 5 } },
-    'cartomante_sorte': { name: 'Cartomante da Sorte', line: 'Cartas', unlocks: { level: 8, victories: 10 } },
-    'tatico_reverso': { name: 'Tático do Reverso', line: 'Cartas', unlocks: { level: 10, victories: 20 } },
-    'estrategista_tabuleiro': { name: 'Estrategista do Tabuleiro', line: 'Cartas', unlocks: { level: 15, victories: 30 } },
-    'mestre_resto': { name: 'Mestre do Resto', line: 'Cartas', unlocks: { level: 20, victories: 50 } },
-    'lorde_reversus': { name: 'Lorde Reversus', line: 'Cartas', unlocks: { level: 30, victories: 75, achievement: 'reversum_win' } },
-    'arquiteto_caos': { name: 'Arquiteto do Caos', line: 'Cartas', unlocks: { level: 40, victories: 100, achievement: 'true_end_beta' } },
-    'soberano_tabuleiro': { name: 'Soberano do Tabuleiro', line: 'Cartas', unlocks: { level: 50, victories: 150, achievement: 'true_end_final' } },
-    'eterno_reversus': { name: 'Eterno Reversus', line: 'Cartas', unlocks: { level: 75, victories: 200, achievement: 'inversus_win' } },
-
-    // Linha "Tabuleiro e Caminhos" - Desbloqueio por nível
-    'peao_errante': { name: 'Peão Errante', line: 'Tabuleiro', unlocks: { level: 3 } },
-    'viajante_casas': { name: 'Viajante das Casas', line: 'Tabuleiro', unlocks: { level: 7 } },
-    'explorador_caminhos': { name: 'Explorador de Caminhos', line: 'Tabuleiro', unlocks: { level: 12 } },
-    'guardiao_cores': { name: 'Guardião das Cores', line: 'Tabuleiro', unlocks: { level: 18 } },
-    'portador_destino': { name: 'Portador do Destino', line: 'Tabuleiro', unlocks: { level: 25 } },
-    'domador_efeitos': { name: 'Domador de Efeitos', line: 'Tabuleiro', unlocks: { level: 35 } },
-    'senhor_espacos': { name: 'Senhor dos Espaços', line: 'Tabuleiro', unlocks: { level: 45 } },
-    'comandante_caminhos': { name: 'Comandante dos Caminhos', line: 'Tabuleiro', unlocks: { level: 55 } },
-    'arquimago_rotas': { name: 'Arquimago das Rotas', line: 'Tabuleiro', unlocks: { level: 65 } },
-    'deus_tabuleiro': { name: 'Deus do Tabuleiro', line: 'Tabuleiro', unlocks: { level: 80 } },
-
-    // Linha "Competitiva / PvP" - Desbloqueio por vitórias
-    'recruta': { name: 'Recruta', line: 'PvP', unlocks: { victories: 1 } },
-    'desafiante': { name: 'Desafiante', line: 'PvP', unlocks: { victories: 10 } },
-    'combatente': { name: 'Combatente', line: 'PvP', unlocks: { victories: 25 } },
-    'veterano': { name: 'Veterano', line: 'PvP', unlocks: { victories: 50 } },
-    'campeao': { name: 'Campeão', line: 'PvP', unlocks: { victories: 75 } },
-    'lenda': { name: 'Lenda', line: 'PvP', unlocks: { victories: 100 } },
-    'ascendente': { name: 'Ascendente', line: 'PvP', unlocks: { victories: 125 } },
-    'imortal': { name: 'Imortal', line: 'PvP', unlocks: { victories: 150 } },
-    'tita': { name: 'Titã', line: 'PvP', unlocks: { victories: 175 } },
-    'supremo_reversus': { name: 'Supremo Reversus', line: 'PvP', unlocks: { victories: 250 } },
+    // Títulos de Ranking PvP (Novo sistema)
+    'pvp_rank_1': { name: 'DEUS do PVP', line: 'Ranking PvP', unlocks: { rank: 1 } },
+    'pvp_rank_2': { name: 'MESTRE do PVP', line: 'Ranking PvP', unlocks: { rank: 2 } },
+    'pvp_rank_3': { name: 'LORDE do PVP', line: 'Ranking PvP', unlocks: { rank: 3 } },
+    'pvp_rank_4_10': { name: 'ELITE DO PVP', line: 'Ranking PvP', unlocks: { rank: 10 } },
+    'pvp_rank_11_20': { name: 'Intocáveis do PVP', line: 'Ranking PvP', unlocks: { rank: 20 } },
+    'pvp_rank_21_30': { name: 'Absurdo do PVP', line: 'Ranking PvP', unlocks: { rank: 30 } },
+    'pvp_rank_31_40': { name: 'Extraordinário no PVP', line: 'Ranking PvP', unlocks: { rank: 40 } },
+    'pvp_rank_41_50': { name: 'Espetacular do PVP', line: 'Ranking PvP', unlocks: { rank: 50 } },
+    'pvp_rank_51_60': { name: 'Maravilha do PVP', line: 'Ranking PvP', unlocks: { rank: 60 } },
+    'pvp_rank_61_70': { name: 'Incrível do PVP', line: 'Ranking PvP', unlocks: { rank: 70 } },
+    'pvp_rank_71_80': { name: 'Entusiasta do PVP', line: 'Ranking PvP', unlocks: { rank: 80 } },
+    'pvp_rank_81_90': { name: 'Aspirante do PVP', line: 'Ranking PvP', unlocks: { rank: 90 } },
+    'pvp_rank_91_100': { name: 'Entre os 100 melhores no PVP!', line: 'Ranking PvP', unlocks: { rank: 100 } },
+    'creator': { name: 'Criador', line: 'Especial' }, // Título especial
 
     // Títulos de Evento
     'event_jan': { name: 'O Visionário', line: 'Evento' },
@@ -99,6 +79,7 @@ async function ensureSchema() {
         defeats           INT DEFAULT 0
       );
       ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_title_code TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS highest_rank_achieved INT;
 
       CREATE TABLE IF NOT EXISTS user_match_history (
         id         SERIAL PRIMARY KEY,
@@ -115,8 +96,14 @@ async function ensureSchema() {
         name        TEXT NOT NULL,
         line        TEXT NOT NULL
       );
-      ALTER TABLE users ADD CONSTRAINT fk_selected_title FOREIGN KEY (selected_title_code) REFERENCES titles(code) ON DELETE SET NULL;
-
+      
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_selected_title') THEN
+          ALTER TABLE users ADD CONSTRAINT fk_selected_title FOREIGN KEY (selected_title_code) REFERENCES titles(code) ON DELETE SET NULL;
+        END IF;
+      END;
+      $$;
 
       CREATE TABLE IF NOT EXISTS user_titles (
         user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -158,7 +145,6 @@ async function ensureSchema() {
     if (creatorRes.rows.length > 0) {
         const creatorId = creatorRes.rows[0].id;
         const creatorTitleCode = 'creator';
-        await client.query(`INSERT INTO titles (code, name, line) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING`, [creatorTitleCode, 'Criador', 'Especial']);
         const titleRes = await client.query(`SELECT id FROM titles WHERE code = $1`, [creatorTitleCode]);
         if(titleRes.rows.length > 0) {
            await client.query(`INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [creatorId, titleRes.rows[0].id]);
@@ -223,29 +209,58 @@ async function addMatchToHistory(googleId, matchData) {
   }
 }
 
-async function checkAndGrantTitles(googleId) {
-    const userRes = await pool.query(`SELECT * FROM users WHERE google_id = $1`, [googleId]);
-    if (!userRes.rows[0]) return;
-    const user = userRes.rows[0];
+async function updateUserRankAndTitles(userId) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
 
-    for (const [code, titleData] of Object.entries(TITLES)) {
-        if (!titleData.unlocks) continue;
-        const { level, victories } = titleData.unlocks;
-        let meetsCriteria = true;
-        if (level && user.level < level) meetsCriteria = false;
-        if (victories && user.victories < victories) meetsCriteria = false;
+        // Etapa 1: Encontrar o novo rank do usuário
+        const rankRes = await client.query(
+            `SELECT rank FROM (
+                SELECT id, RANK() OVER (ORDER BY victories DESC, id ASC) as rank
+                FROM users
+            ) as ranked_users WHERE id = $1`,
+            [userId]
+        );
 
-        if (meetsCriteria) {
-            await grantTitleByCode(user.id, code);
+        if (rankRes.rows.length === 0) throw new Error("Usuário não encontrado para atualização de rank.");
+        const newRank = parseInt(rankRes.rows[0].rank, 10);
+
+        // Etapa 2: Atualizar o melhor rank do usuário, se necessário
+        const userRes = await client.query('SELECT highest_rank_achieved FROM users WHERE id = $1', [userId]);
+        const currentHighest = userRes.rows[0].highest_rank_achieved;
+
+        if (currentHighest === null || newRank < currentHighest) {
+            await client.query('UPDATE users SET highest_rank_achieved = $1 WHERE id = $2', [newRank, userId]);
         }
+        
+        const bestRank = Math.min(newRank, currentHighest || Infinity);
+
+        // Etapa 3: Conceder títulos com base no melhor rank alcançado
+        for (const [code, titleData] of Object.entries(TITLES)) {
+            if (titleData.line === 'Ranking PvP' && titleData.unlocks && titleData.unlocks.rank) {
+                if (bestRank <= titleData.unlocks.rank) {
+                    await grantTitleByCode(userId, code, client);
+                }
+            }
+        }
+
+        await client.query('COMMIT');
+    } catch (e) {
+        await client.query('ROLLBACK');
+        console.error("Erro na transação de atualização de rank e títulos:", e);
+        throw e;
+    } finally {
+        client.release();
     }
 }
 
-async function grantTitleByCode(userId, titleCode) {
-    const titleRes = await pool.query(`SELECT id FROM titles WHERE code = $1`, [titleCode]);
+
+async function grantTitleByCode(userId, titleCode, client = pool) {
+    const titleRes = await client.query(`SELECT id FROM titles WHERE code = $1`, [titleCode]);
     if (titleRes.rows[0]) {
         const titleId = titleRes.rows[0].id;
-        await pool.query(
+        await client.query(
             `INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
             [userId, titleId]
         );
@@ -261,10 +276,9 @@ async function getTopPlayers(page = 1, limit = 10) {
   const totalPages = Math.ceil(totalPlayers / limit);
 
   const playersRes = await pool.query(
-    `SELECT u.google_id, u.username, u.avatar_url, u.victories, t.name as title,
+    `SELECT u.google_id, u.username, u.avatar_url, u.victories, u.selected_title_code,
      RANK() OVER (ORDER BY u.victories DESC, u.id ASC) as rank
      FROM users u
-     LEFT JOIN titles t ON u.selected_title_code = t.code
      ORDER BY rank
      LIMIT $1 OFFSET $2`,
     [limit, offset]
@@ -313,10 +327,9 @@ async function removeFriend(userId1, userId2) {
 
 async function getFriendsList(userId) {
     const { rows } = await pool.query(
-        `SELECT u.id, u.google_id, u.username, u.avatar_url, t.name as title
+        `SELECT u.id, u.google_id, u.username, u.avatar_url, u.selected_title_code
          FROM friends f
          JOIN users u ON u.id = CASE WHEN f.user_one_id = $1 THEN f.user_two_id ELSE f.user_one_id END
-         LEFT JOIN titles t ON u.selected_title_code = t.code
          WHERE f.user_one_id = $1 OR f.user_two_id = $1`,
         [userId]
     );
@@ -359,9 +372,8 @@ async function getPrivateMessageHistory(userId1, userId2) {
 
 async function getUserProfile(googleId, requesterId = null) {
   const userRes = await pool.query(
-      `SELECT u.*, t.name as selected_title
+      `SELECT u.*
        FROM users u
-       LEFT JOIN titles t ON u.selected_title_code = t.code
        WHERE u.google_id = $1`, [googleId]);
   const user = userRes.rows[0];
   if (!user) return null;
@@ -400,7 +412,7 @@ async function getUserProfile(googleId, requesterId = null) {
 
 module.exports = {
   ensureSchema, findOrCreateUser, addXp, addMatchToHistory, getTopPlayers,
-  getUserProfile, checkAndGrantTitles, grantTitleByCode, testConnection,
-  searchUsers, addFriend, removeFriend, getFriendsList, getFriendshipStatus,
-  setSelectedTitle, savePrivateMessage, getPrivateMessageHistory
+  getUserProfile, testConnection, searchUsers, addFriend, removeFriend, 
+  getFriendsList, getFriendshipStatus, setSelectedTitle, 
+  savePrivateMessage, getPrivateMessageHistory, updateUserRankAndTitles, grantTitleByCode
 };
