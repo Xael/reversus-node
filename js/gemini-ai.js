@@ -1,1 +1,0 @@
-// This file is obsolete. Chat logic moved to js/ai/gemini-chat.js

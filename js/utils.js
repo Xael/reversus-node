@@ -1,1 +1,0 @@
-// This file is obsolete. Moved to js/core/utils.js
