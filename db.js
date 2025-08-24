@@ -1,14 +1,28 @@
 // db.js - Adaptador de Banco de Dados PostgreSQL para Reversus
 const { Pool } = require('pg');
 
+// A configuração do pool agora usará apenas a connectionString.
+// O modo SSL será determinado pelo parâmetro `sslmode` na própria URL.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  // Descomente a linha abaixo se seu provedor de nuvem exigir SSL
-  // ssl: { rejectUnauthorized: false } 
 });
 
-// --- ESTRUTURA DE DADOS ---
+// --- FUNÇÃO DE TESTE DE CONEXÃO ---
+async function testConnection() {
+  let client;
+  try {
+    client = await pool.connect();
+    console.log("Conexão com o banco de dados bem-sucedida!");
+  } catch (err) {
+    console.error("ERRO DE CONEXÃO COM O BANCO DE DADOS:", err.stack);
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+}
 
+// --- ESTRUTURA DE DADOS ---
 const TITLES = {
     // Linha "Cartas e Estratégia"
     'aprendiz_resto': { name: 'Aprendiz do Resto', line: 'Cartas', unlocks: { level: 2, victories: 1 } },
@@ -45,8 +59,21 @@ const TITLES = {
     'imortal': { name: 'Imortal', line: 'PvP', unlocks: { victories: 150 } },
     'tita': { name: 'Titã', line: 'PvP', unlocks: { victories: 175 } },
     'supremo_reversus': { name: 'Supremo Reversus', line: 'PvP', unlocks: { victories: 250 } },
-};
 
+    // Títulos de Evento
+    'event_jan': { name: 'O Visionário', line: 'Evento' },
+    'event_feb': { name: 'Unidor de Restos', line: 'Evento' },
+    'event_mar': { name: 'Abençoado pelo Resto', line: 'Evento' },
+    'event_apr': { name: 'Guardião das Runas', line: 'Evento' },
+    'event_may': { name: 'Sombras no Tabuleiro', line: 'Evento' },
+    'event_jun': { name: 'O Ardente', line: 'Evento' },
+    'event_jul': { name: 'Ladrão de Restos', line: 'Evento' },
+    'event_aug': { name: 'O Eterno', line: 'Evento' },
+    'event_sep': { name: 'Caçador de Segredos', line: 'Evento' },
+    'event_oct': { name: 'Feiticeiro do Tabuleiro', line: 'Evento' },
+    'event_nov': { name: 'Congelador de Destinos', line: 'Evento' },
+    'event_dec': { name: 'Luz do Fim de Ano', line: 'Evento' },
+};
 
 // --- HELPERS ---
 function levelFromXp(xp) {
@@ -61,16 +88,17 @@ async function ensureSchema() {
     await client.query('BEGIN');
     const sql = `
       CREATE TABLE IF NOT EXISTS users (
-        id            SERIAL PRIMARY KEY,
-        google_id     TEXT UNIQUE NOT NULL,
-        username      TEXT NOT NULL,
-        avatar_url    TEXT,
-        created_at    TIMESTAMPTZ DEFAULT now(),
-        xp            INT DEFAULT 0,
-        level         INT DEFAULT 1,
-        victories     INT DEFAULT 0,
-        defeats       INT DEFAULT 0
+        id                SERIAL PRIMARY KEY,
+        google_id         TEXT UNIQUE NOT NULL,
+        username          TEXT NOT NULL,
+        avatar_url        TEXT,
+        created_at        TIMESTAMPTZ DEFAULT now(),
+        xp                INT DEFAULT 0,
+        level             INT DEFAULT 1,
+        victories         INT DEFAULT 0,
+        defeats           INT DEFAULT 0
       );
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_title_code TEXT;
 
       CREATE TABLE IF NOT EXISTS user_match_history (
         id         SERIAL PRIMARY KEY,
@@ -87,12 +115,29 @@ async function ensureSchema() {
         name        TEXT NOT NULL,
         line        TEXT NOT NULL
       );
+      ALTER TABLE users ADD CONSTRAINT fk_selected_title FOREIGN KEY (selected_title_code) REFERENCES titles(code) ON DELETE SET NULL;
+
 
       CREATE TABLE IF NOT EXISTS user_titles (
         user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         title_id    INT NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
         earned_at   TIMESTAMPTZ DEFAULT now(),
         PRIMARY KEY (user_id, title_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS friends (
+        user_one_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        user_two_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        PRIMARY KEY (user_one_id, user_two_id),
+        CONSTRAINT check_users CHECK (user_one_id < user_two_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS private_messages (
+        id           SERIAL PRIMARY KEY,
+        sender_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        recipient_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        content      TEXT NOT NULL,
+        sent_at      TIMESTAMPTZ DEFAULT now()
       );
       
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
@@ -105,6 +150,19 @@ async function ensureSchema() {
             `INSERT INTO titles (code, name, line) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING`,
             [code, data.name, data.line]
         );
+    }
+    
+    // Concede o título "Criador"
+    const creatorEmail = 'alexblbn@gmail.com';
+    const creatorRes = await client.query('SELECT id FROM users WHERE google_id = (SELECT google_id FROM users WHERE username LIKE \'%Alexandre Lima%\' LIMIT 1)');
+    if (creatorRes.rows.length > 0) {
+        const creatorId = creatorRes.rows[0].id;
+        const creatorTitleCode = 'creator';
+        await client.query(`INSERT INTO titles (code, name, line) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING`, [creatorTitleCode, 'Criador', 'Especial']);
+        const titleRes = await client.query(`SELECT id FROM titles WHERE code = $1`, [creatorTitleCode]);
+        if(titleRes.rows.length > 0) {
+           await client.query(`INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [creatorId, titleRes.rows[0].id]);
+        }
     }
 
     await client.query('COMMIT');
@@ -119,13 +177,11 @@ async function ensureSchema() {
 // --- API DO BANCO DE DADOS ---
 
 async function findOrCreateUser(googlePayload) {
-  const { sub: googleId, name, picture: avatarUrl } = googlePayload;
+  const { sub: googleId, name, picture: avatarUrl, email } = googlePayload;
   
-  // Primeiro, tenta encontrar o usuário
   let res = await pool.query(`SELECT * FROM users WHERE google_id = $1`, [googleId]);
   
   if (res.rows.length === 0) {
-    // Se não encontrar, cria um novo
     res = await pool.query(
       `INSERT INTO users (google_id, username, avatar_url) VALUES ($1, $2, $3)
        RETURNING *`,
@@ -160,7 +216,6 @@ async function addMatchToHistory(googleId, matchData) {
     [userId, outcome, mode, opponents || 'N/A']
   );
 
-  // Atualiza contadores de vitórias/derrotas
   if (outcome === 'Vitória') {
     await pool.query(`UPDATE users SET victories = victories + 1 WHERE id = $1`, [userId]);
   } else if (outcome === 'Derrota') {
@@ -173,49 +228,146 @@ async function checkAndGrantTitles(googleId) {
     if (!userRes.rows[0]) return;
     const user = userRes.rows[0];
 
-    const achievementsRes = await pool.query(
-      `SELECT a.code FROM user_achievements ua JOIN achievements a ON ua.achievement_id = a.id WHERE ua.user_id = $1`,
-      [user.id]
-    );
-    const userAchievements = new Set(achievementsRes.rows.map(r => r.code));
-
     for (const [code, titleData] of Object.entries(TITLES)) {
-        const { level, victories, achievement } = titleData.unlocks;
+        if (!titleData.unlocks) continue;
+        const { level, victories } = titleData.unlocks;
         let meetsCriteria = true;
         if (level && user.level < level) meetsCriteria = false;
         if (victories && user.victories < victories) meetsCriteria = false;
-        if (achievement && !userAchievements.has(achievement)) meetsCriteria = false;
 
         if (meetsCriteria) {
-            const titleRes = await pool.query(`SELECT id FROM titles WHERE code = $1`, [code]);
-            if (titleRes.rows[0]) {
-                const titleId = titleRes.rows[0].id;
-                await pool.query(
-                    `INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-                    [user.id, titleId]
-                );
-            }
+            await grantTitleByCode(user.id, code);
         }
     }
 }
 
-async function getTopTenPlayers() {
-  const { rows } = await pool.query(
-    `SELECT username, avatar_url, victories
-     FROM users
-     ORDER BY victories DESC, id ASC
-     LIMIT 10`
-  );
-  return rows;
+async function grantTitleByCode(userId, titleCode) {
+    const titleRes = await pool.query(`SELECT id FROM titles WHERE code = $1`, [titleCode]);
+    if (titleRes.rows[0]) {
+        const titleId = titleRes.rows[0].id;
+        await pool.query(
+            `INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [userId, titleId]
+        );
+    } else {
+        console.error(`Tentativa de conceder um código de título inexistente: ${titleCode}`);
+    }
 }
 
-async function getUserProfile(googleId) {
-  const userRes = await pool.query(`SELECT * FROM users WHERE google_id = $1`, [googleId]);
+async function getTopPlayers(page = 1, limit = 10) {
+  const offset = (page - 1) * limit;
+  const totalRes = await pool.query('SELECT COUNT(*) FROM users');
+  const totalPlayers = parseInt(totalRes.rows[0].count, 10);
+  const totalPages = Math.ceil(totalPlayers / limit);
+
+  const playersRes = await pool.query(
+    `SELECT u.google_id, u.username, u.avatar_url, u.victories, t.name as title,
+     RANK() OVER (ORDER BY u.victories DESC, u.id ASC) as rank
+     FROM users u
+     LEFT JOIN titles t ON u.selected_title_code = t.code
+     ORDER BY rank
+     LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+
+  return { players: playersRes.rows, currentPage: page, totalPages };
+}
+
+async function searchUsers(query, currentUserId) {
+    if (!query) return [];
+    const { rows } = await pool.query(
+        `SELECT id, google_id, username, avatar_url FROM users
+         WHERE username ILIKE $1 AND id != $2
+         LIMIT 10`,
+        [`%${query}%`, currentUserId]
+    );
+    return rows;
+}
+
+async function getFriendshipStatus(userId1, userId2) {
+    const [lowId, highId] = [Math.min(userId1, userId2), Math.max(userId1, userId2)];
+    const { rows } = await pool.query(
+        `SELECT * FROM friends WHERE user_one_id = $1 AND user_two_id = $2`,
+        [lowId, highId]
+    );
+    if (rows.length > 0) return 'friends';
+    return 'none';
+}
+
+
+async function addFriend(userId1, userId2) {
+    const [lowId, highId] = [Math.min(userId1, userId2), Math.max(userId1, userId2)];
+    await pool.query(
+        'INSERT INTO friends (user_one_id, user_two_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [lowId, highId]
+    );
+}
+
+async function removeFriend(userId1, userId2) {
+    const [lowId, highId] = [Math.min(userId1, userId2), Math.max(userId1, userId2)];
+    await pool.query(
+        'DELETE FROM friends WHERE user_one_id = $1 AND user_two_id = $2',
+        [lowId, highId]
+    );
+}
+
+async function getFriendsList(userId) {
+    const { rows } = await pool.query(
+        `SELECT u.id, u.google_id, u.username, u.avatar_url, t.name as title
+         FROM friends f
+         JOIN users u ON u.id = CASE WHEN f.user_one_id = $1 THEN f.user_two_id ELSE f.user_one_id END
+         LEFT JOIN titles t ON u.selected_title_code = t.code
+         WHERE f.user_one_id = $1 OR f.user_two_id = $1`,
+        [userId]
+    );
+    return rows;
+}
+
+async function setSelectedTitle(userId, titleCode) {
+    // Verify the user has unlocked this title
+    const res = await pool.query(
+        `SELECT 1 FROM user_titles ut
+         JOIN titles t ON ut.title_id = t.id
+         WHERE ut.user_id = $1 AND t.code = $2`,
+        [userId, titleCode]
+    );
+    if (res.rows.length > 0) {
+        await pool.query('UPDATE users SET selected_title_code = $1 WHERE id = $2', [titleCode, userId]);
+    } else {
+        throw new Error('User has not unlocked this title');
+    }
+}
+
+async function savePrivateMessage(senderId, recipientId, content) {
+    await pool.query(
+        'INSERT INTO private_messages (sender_id, recipient_id, content) VALUES ($1, $2, $3)',
+        [senderId, recipientId, content]
+    );
+}
+
+async function getPrivateMessageHistory(userId1, userId2) {
+    const { rows } = await pool.query(
+        `SELECT sender_id, recipient_id, content, sent_at FROM private_messages
+         WHERE (sender_id = $1 AND recipient_id = $2) OR (sender_id = $2 AND recipient_id = $1)
+         ORDER BY sent_at ASC
+         LIMIT 100`,
+        [userId1, userId2]
+    );
+    return rows;
+}
+
+
+async function getUserProfile(googleId, requesterId = null) {
+  const userRes = await pool.query(
+      `SELECT u.*, t.name as selected_title
+       FROM users u
+       LEFT JOIN titles t ON u.selected_title_code = t.code
+       WHERE u.google_id = $1`, [googleId]);
   const user = userRes.rows[0];
   if (!user) return null;
 
   const titlesRes = await pool.query(
-    `SELECT t.name, t.line
+    `SELECT t.code, t.name, t.line
      FROM user_titles ut
      JOIN titles t ON t.id = ut.title_id
      WHERE ut.user_id = $1
@@ -231,21 +383,24 @@ async function getUserProfile(googleId) {
      LIMIT 15`,
     [user.id]
   );
+  
+  let friendshipStatus = null;
+  if(requesterId && requesterId !== user.id) {
+      friendshipStatus = await getFriendshipStatus(requesterId, user.id);
+  }
 
   return {
     ...user,
     titles: titlesRes.rows,
-    history: historyRes.rows
+    history: historyRes.rows,
+    friendshipStatus
   };
 }
 
 
 module.exports = {
-  ensureSchema,
-  findOrCreateUser,
-  addXp,
-  addMatchToHistory,
-  getTopTenPlayers,
-  getUserProfile,
-  checkAndGrantTitles
+  ensureSchema, findOrCreateUser, addXp, addMatchToHistory, getTopPlayers,
+  getUserProfile, checkAndGrantTitles, grantTitleByCode, testConnection,
+  searchUsers, addFriend, removeFriend, getFriendsList, getFriendshipStatus,
+  setSelectedTitle, savePrivateMessage, getPrivateMessageHistory
 };
