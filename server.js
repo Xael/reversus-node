@@ -33,6 +33,7 @@ const NUM_PATHS = 6;
 const BOARD_SIZE = 9;
 
 const rooms = {};
+const activeConnections = new Map(); // google_id -> socket.id
 
 // --- FUNÇÕES DE LÓGICA DE JOGO ---
 
@@ -347,10 +348,29 @@ io.on('connection', (socket) => {
         try {
             const ticket = await client.verifyIdToken({ idToken: token, audience: GOOGLE_CLIENT_ID });
             const payload = ticket.getPayload();
+            const googleId = payload.sub;
+
+            // --- Single Session Logic ---
+            if (activeConnections.has(googleId)) {
+                const oldSocketId = activeConnections.get(googleId);
+                if (oldSocketId !== socket.id) {
+                    console.log(`Duplicate login for ${googleId}. Disconnecting old session ${oldSocketId}.`);
+                    const oldSocket = io.sockets.sockets.get(oldSocketId);
+                    if (oldSocket) {
+                        oldSocket.emit('forceDisconnect', 'Sua conta foi conectada em um novo local.');
+                        oldSocket.disconnect(true);
+                    }
+                }
+            }
+            activeConnections.set(googleId, socket.id);
+            socket.data.google_id = googleId; // Store for disconnect handling
+            // --- End Single Session Logic ---
+
             const userProfile = await db.findOrCreateUser(payload);
             socket.data.userProfile = userProfile;
             socket.emit('loginSuccess', userProfile);
         } catch (error) {
+            console.error('Login error:', error);
             socket.emit('loginError', 'Falha na autenticação.');
         }
     });
@@ -609,6 +629,13 @@ io.on('connection', (socket) => {
     });
 
     const handleDisconnect = () => {
+        // --- Single Session Cleanup ---
+        if (socket.data.google_id && activeConnections.get(socket.data.google_id) === socket.id) {
+            activeConnections.delete(socket.data.google_id);
+            console.log(`Cleaned up active session for ${socket.data.google_id}`);
+        }
+        // --- End Single Session Cleanup ---
+
         console.log(`Jogador desconectado: ${socket.id}`);
         const roomId = socket.data.roomId;
         if (!roomId || !rooms[roomId]) return;
