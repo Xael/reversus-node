@@ -5,6 +5,7 @@ const { Pool } = require('pg');
 // O modo SSL será determinado pelo parâmetro `sslmode` na própria URL.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
 
 // --- FUNÇÃO DE TESTE DE CONEXÃO ---
@@ -98,7 +99,8 @@ async function ensureSchema() {
         xp            INT DEFAULT 0,
         level         INT DEFAULT 1,
         victories     INT DEFAULT 0,
-        defeats       INT DEFAULT 0
+        defeats       INT DEFAULT 0,
+        is_banned     BOOLEAN DEFAULT FALSE
       );
 
       CREATE TABLE IF NOT EXISTS user_match_history (
@@ -150,19 +152,24 @@ async function ensureSchema() {
 async function findOrCreateUser(googlePayload) {
   const { sub: googleId, name, picture: avatarUrl } = googlePayload;
   
-  // Primeiro, tenta encontrar o usuário
   let res = await pool.query(`SELECT * FROM users WHERE google_id = $1`, [googleId]);
   
   if (res.rows.length === 0) {
-    // Se não encontrar, cria um novo
     res = await pool.query(
       `INSERT INTO users (google_id, username, avatar_url) VALUES ($1, $2, $3)
        RETURNING *`,
       [googleId, name, avatarUrl]
     );
+  } else if (res.rows[0].is_banned) {
+    throw new Error('User is banned');
   }
   
   return res.rows[0];
+}
+
+async function findUserByUsername(username) {
+    const { rows } = await pool.query(`SELECT id, google_id, username, avatar_url, is_banned FROM users WHERE username ILIKE $1`, [username]);
+    return rows[0] || null;
 }
 
 async function addXp(googleId, amount) {
@@ -189,7 +196,6 @@ async function addMatchToHistory(googleId, matchData) {
     [userId, outcome, mode, opponents || 'N/A']
   );
 
-  // Atualiza contadores de vitórias/derrotas
   if (outcome === 'Vitória') {
     await pool.query(`UPDATE users SET victories = victories + 1 WHERE id = $1`, [userId]);
   } else if (outcome === 'Derrota') {
@@ -202,12 +208,8 @@ async function checkAndGrantTitles(googleId) {
     if (!userRes.rows[0]) return;
     const user = userRes.rows[0];
 
-    // NOTA: A verificação de conquistas foi removida. O servidor não pode verificar
-    // conquistas que são armazenadas apenas no lado do cliente (localStorage).
-    // A concessão de títulos agora se baseia apenas em critérios do lado do servidor (nível, vitórias).
-
     for (const [code, titleData] of Object.entries(TITLES)) {
-        if (!titleData.unlocks) continue; // Pula títulos de evento
+        if (!titleData.unlocks) continue;
         const { level, victories } = titleData.unlocks;
         let meetsCriteria = true;
         if (level && user.level < level) meetsCriteria = false;
@@ -227,17 +229,14 @@ async function grantTitleByCode(userId, titleCode) {
             `INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
             [userId, titleId]
         );
-        console.log(`Título ${titleCode} concedido ao usuário ${userId}`);
-    } else {
-        console.error(`Tentativa de conceder um código de título inexistente: ${titleCode}`);
     }
 }
 
-
 async function getTopTenPlayers() {
   const { rows } = await pool.query(
-    `SELECT username, avatar_url, victories
+    `SELECT google_id, username, avatar_url, victories
      FROM users
+     WHERE is_banned = FALSE
      ORDER BY victories DESC, id ASC
      LIMIT 10`
   );
@@ -274,15 +273,41 @@ async function getUserProfile(googleId) {
   };
 }
 
+async function banUserByGoogleId(googleId, isBanned) {
+    await pool.query(`UPDATE users SET is_banned = $1 WHERE google_id = $2`, [isBanned, googleId]);
+}
+
+async function wipeUserDataByGoogleId(googleId) {
+    const { rows } = await pool.query(`SELECT id FROM users WHERE google_id = $1`, [googleId]);
+    if (!rows[0]) return;
+    const userId = rows[0].id;
+    
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query(`DELETE FROM user_match_history WHERE user_id = $1`, [userId]);
+        await client.query(`DELETE FROM user_titles WHERE user_id = $1`, [userId]);
+        await client.query(`UPDATE users SET xp=0, level=1, victories=0, defeats=0 WHERE id = $1`, [userId]);
+        await client.query('COMMIT');
+    } catch(e) {
+        await client.query('ROLLBACK');
+        throw e;
+    } finally {
+        client.release();
+    }
+}
 
 module.exports = {
   ensureSchema,
   findOrCreateUser,
+  findUserByUsername,
   addXp,
   addMatchToHistory,
   getTopTenPlayers,
   getUserProfile,
   checkAndGrantTitles,
   grantTitleByCode,
+  banUserByGoogleId,
+  wipeUserDataByGoogleId,
   testConnection
 };

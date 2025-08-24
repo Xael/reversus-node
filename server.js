@@ -344,11 +344,12 @@ io.on('connection', (socket) => {
     console.log(`Jogador conectado: ${socket.id}`);
     db.ensureSchema().catch(console.error);
 
-    socket.on('google-login', async ({ token }) => {
+    socket.on('google-login', async ({ token, email }) => {
         try {
             const ticket = await client.verifyIdToken({ idToken: token, audience: GOOGLE_CLIENT_ID });
             const payload = ticket.getPayload();
             const googleId = payload.sub;
+            const userEmail = payload.email;
 
             // --- Single Session Logic ---
             if (activeConnections.has(googleId)) {
@@ -363,15 +364,26 @@ io.on('connection', (socket) => {
                 }
             }
             activeConnections.set(googleId, socket.id);
-            socket.data.google_id = googleId; // Store for disconnect handling
-            // --- End Single Session Logic ---
+            socket.data.google_id = googleId; 
 
             const userProfile = await db.findOrCreateUser(payload);
+            
+            // --- GM Logic ---
+            if (userEmail === 'alexblbn@gmail.com') {
+                userProfile.isGM = true;
+                userProfile.username = 'GM Xael 🃏';
+            }
+
             socket.data.userProfile = userProfile;
             socket.emit('loginSuccess', userProfile);
         } catch (error) {
-            console.error('Login error:', error);
-            socket.emit('loginError', 'Falha na autenticação.');
+            if (error.message === 'User is banned') {
+                socket.emit('loginError', 'Esta conta foi banida.');
+            } else {
+                console.error('Login error:', error);
+                socket.emit('loginError', 'Falha na autenticação.');
+            }
+            socket.disconnect(true);
         }
     });
 
@@ -384,13 +396,18 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('getProfile', async () => {
-        if (!socket.data.userProfile) return;
+    socket.on('getProfile', async (data) => {
+        const googleIdToFetch = data?.googleId || socket.data.userProfile?.google_id;
+        if (!googleIdToFetch) return;
         try {
-            const profileData = await db.getUserProfile(socket.data.userProfile.google_id);
+            const profileData = await db.getUserProfile(googleIdToFetch);
+            if (profileData && profileData.google_id === '106198835948301549463') { // GM's Google ID
+                 profileData.isGM = true;
+                 profileData.username = 'GM Xael 🃏';
+            }
             socket.emit('profileData', profileData);
         } catch (error) {
-            socket.emit('error', 'Não foi possível carregar seu perfil.');
+            socket.emit('error', 'Não foi possível carregar o perfil.');
         }
     });
     
@@ -426,6 +443,58 @@ io.on('connection', (socket) => {
             console.error('Erro ao registrar final da partida:', error);
         }
     });
+
+    // --- ADMIN/GM EVENTS ---
+    socket.on('admin_get_stats', () => {
+        if (socket.data.userProfile?.isGM) {
+            socket.emit('admin_stats_response', { onlinePlayers: io.engine.clientsCount });
+        }
+    });
+
+    socket.on('admin_find_user', async (username) => {
+        if (socket.data.userProfile?.isGM) {
+            const user = await db.findUserByUsername(username);
+            socket.emit('admin_find_user_response', user);
+        }
+    });
+    
+    socket.on('admin_ban_user', async (googleId) => {
+        if (socket.data.userProfile?.isGM) {
+            await db.banUserByGoogleId(googleId, true);
+            socket.emit('admin_action_success', `Usuário banido.`);
+            // Disconnect the user if they are currently online
+            const socketIdToKick = activeConnections.get(googleId);
+            if (socketIdToKick) {
+                const socketToKick = io.sockets.sockets.get(socketIdToKick);
+                if (socketToKick) {
+                    socketToKick.emit('forceDisconnect', 'Sua conta foi banida por um administrador.');
+                    socketToKick.disconnect(true);
+                }
+            }
+            const user = await db.findUserByUsername(googleId); // Hack to find user again
+            socket.emit('admin_find_user_response', user); // Refresh UI
+        }
+    });
+
+    socket.on('admin_unban_user', async (googleId) => {
+        if (socket.data.userProfile?.isGM) {
+            await db.banUserByGoogleId(googleId, false);
+            socket.emit('admin_action_success', `Banimento do usuário removido.`);
+            const user = await db.findUserByUsername(googleId); // Hack to find user again
+            socket.emit('admin_find_user_response', user); // Refresh UI
+        }
+    });
+
+
+    socket.on('admin_wipe_user', async (googleId) => {
+        if (socket.data.userProfile?.isGM) {
+            await db.wipeUserDataByGoogleId(googleId);
+            socket.emit('admin_action_success', `Os dados do usuário foram apagados.`);
+            const user = await db.findUserByUsername(googleId); // Hack to find user again
+            socket.emit('admin_find_user_response', user); // Refresh UI
+        }
+    });
+
 
     socket.on('listRooms', () => { socket.emit('roomList', getPublicRoomsList()); });
 
@@ -581,6 +650,7 @@ io.on('connection', (socket) => {
             applyEffect(room.gameState, card, targetId, playerState.name, options.effectType, options);
         }
         
+        io.to(roomId).emit('animateCardPlay', { card, startPlayerId: player.playerId, targetPlayerId, options });
         broadcastGameState(roomId);
     });
     
