@@ -190,15 +190,16 @@ io.on('connection', (socket) => {
     socket.on('sendPrivateMessage', async ({ recipientId, content }) => {
         if (!socket.data.userProfile) return;
         const senderId = socket.data.userProfile.id;
+        const senderUsername = socket.data.userProfile.username;
         try {
             await db.savePrivateMessage(senderId, recipientId, content);
             const recipientSocketId = onlineUsers.get(recipientId);
-            const messageData = { senderId, content, timestamp: new Date() };
-            // Envia para o destinatário se estiver online
+            const messageData = { senderId, senderUsername, content, timestamp: new Date() };
+            
             if (recipientSocketId) {
                 io.to(recipientSocketId).emit('privateMessage', messageData);
             }
-            // Confirmação de envio para o remetente
+
             socket.emit('privateMessage', { ...messageData, recipientId });
         } catch (error) {
             console.error("Send Message Error:", error);
