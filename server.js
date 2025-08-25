@@ -630,7 +630,7 @@ io.on('connection', (socket) => {
             decks: { value: valueDeck, effect: effectDeck },
             discardPiles: { value: [], effect: [] },
             boardPaths: boardPaths, 
-            gamePhase: 'initial_draw',
+            gamePhase: 'initial_draw', // Start with draw phase
             gameMode: room.mode,
             isPvp: true, currentPlayer: startingPlayerId, turn: 1,
             log: [{ type: 'system', message: `Partida PvP iniciada! Modo: ${room.mode}` }],
@@ -640,6 +640,14 @@ io.on('connection', (socket) => {
     
         room.gameState = gameState;
         io.to(roomId).emit('gameStarted', gameState);
+        
+        // After sending the initial state, transition to playing phase
+        setTimeout(() => {
+            if (rooms[roomId] && rooms[roomId].gameState) {
+                rooms[roomId].gameState.gamePhase = 'playing';
+                broadcastGameState(roomId);
+            }
+        }, 5000); // Delay to allow client-side draw animation
     });
 
     socket.on('playCard', ({ cardId, targetId, options = {} }) => {
@@ -657,6 +665,27 @@ io.on('connection', (socket) => {
         
         let cardDestinationPlayer = room.gameState.players[targetId];
 
+        // --- EMIT ANIMATION EVENT ---
+        let targetSlotLabel;
+        if (card.type === 'value') {
+            targetSlotLabel = playerState.playedCards.value.length === 0 ? 'Valor 1' : 'Valor 2';
+        } else {
+            const effectName = options.isIndividualLock ? options.effectNameToApply : card.name;
+            const isScoreEffect = ['Mais', 'Menos'].includes(effectName) || (card.name === 'Reversus' && options.effectType === 'score');
+            if (isScoreEffect) {
+                targetSlotLabel = 'Pontuação';
+            } else if (card.name === 'Reversus Total' && !options.isIndividualLock) {
+                targetSlotLabel = 'Reversus T.';
+            } else {
+                targetSlotLabel = 'Movimento';
+            }
+        }
+        io.to(roomId).emit('cardPlayedAnimation', {
+            casterId: player.playerId, targetId, card, targetSlotLabel
+        });
+
+
+        // --- UPDATE GAME STATE ---
         if (card.type === 'value') {
             playerState.playedCards.value.push(card);
             playerState.playedValueCardThisTurn = true;
