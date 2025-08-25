@@ -25,6 +25,10 @@ const userSockets = new Map(); // Key: socket.id, Value: userId (DB id)
 // --- LÓGICA DE JOGO ---
 const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { value: 6, count: 8 }, { value: 8, count: 6 }, { value: 10, count: 4 }];
 const EFFECT_DECK_CONFIG = [{ name: 'Mais', count: 4 }, { name: 'Menos', count: 4 }, { name: 'Sobe', count: 4 }, { name: 'Desce', count: 4 }, { name: 'Pula', count: 4 }, { name: 'Reversus', count: 4 }, { name: 'Reversus Total', count: 1 }];
+const NUM_PATHS = 6;
+const BOARD_SIZE = 9;
+const COLORED_SPACES_PER_PATH = 2;
+
 
 function createDeck(config, cardType) {
     let idCounter = 0;
@@ -41,6 +45,32 @@ function shuffle(array) {
     }
     return array;
 };
+
+function generateBoardPaths(options = {}) {
+    const paths = [];
+    for (let i = 0; i < NUM_PATHS; i++) {
+        const spaces = Array.from({ length: BOARD_SIZE }, (_, j) => ({
+            id: j + 1, color: 'white', effectName: null, isUsed: false
+        }));
+        
+        const colorableSpaceIds = Array.from({ length: 7 }, (_, j) => j + 2);
+        shuffle(colorableSpaceIds);
+        let currentSpaceIndex = 0;
+
+        const numBlueRed = COLORED_SPACES_PER_PATH;
+        for (let k = 0; k < numBlueRed && currentSpaceIndex < colorableSpaceIds.length; k++) {
+            const spaceToColor = spaces.find(s => s.id === colorableSpaceIds[currentSpaceIndex]);
+             if (spaceToColor) {
+                spaceToColor.color = Math.random() > 0.5 ? 'blue' : 'red';
+            }
+            currentSpaceIndex++;
+        }
+        
+        paths.push({ id: i, spaces });
+    }
+    return paths;
+};
+
 
 // --- FUNÇÕES HELPER DO SERVIDOR ---
 function getLobbyDataForRoom(room) {
@@ -382,11 +412,17 @@ io.on('connection', (socket) => {
             ])
         );
 
+        const boardPaths = generateBoardPaths();
+        playerIdsInGame.forEach((id, index) => { 
+            if(boardPaths[index]) boardPaths[index].playerId = id; 
+        });
+
         const gameState = {
             players, playerIdsInGame,
             decks: { value: valueDeck, effect: effectDeck },
             discardPiles: { value: [], effect: [] },
-            boardPaths: [], gamePhase: 'playing', gameMode: room.mode,
+            boardPaths: boardPaths, 
+            gamePhase: 'playing', gameMode: room.mode,
             isPvp: true, currentPlayer: 'player-1', turn: 1,
             log: [{ type: 'system', message: `Partida PvP iniciada! Modo: ${room.mode}` }],
             consecutivePasses: 0,
