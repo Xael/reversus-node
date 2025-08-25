@@ -194,8 +194,10 @@ io.on('connection', (socket) => {
         } catch (error) { console.error("Search Error:", error); }
     });
 
-    socket.on('sendFriendRequest', async ({ targetUserId }) => {
-        if (!socket.data.userProfile) return;
+    socket.on('sendFriendRequest', async ({ targetUserId }, callback) => {
+        if (!socket.data.userProfile) {
+            return callback({ success: false, error: 'Usuário não autenticado.' });
+        }
         try {
             const senderProfile = socket.data.userProfile;
             const request = await db.sendFriendRequest(senderProfile.id, targetUserId);
@@ -210,10 +212,10 @@ io.on('connection', (socket) => {
                     });
                 }
             }
-            socket.emit('requestSent');
+            callback({ success: true }); // Acknowledge success
         } catch (error) {
             console.error("Send Friend Request Error:", error);
-            socket.emit('error', 'Não foi possível enviar o pedido de amizade.');
+            callback({ success: false, error: 'Não foi possível enviar o pedido de amizade. O usuário já pode ser seu amigo ou ter um pedido pendente.' });
         }
     });
 
@@ -235,10 +237,9 @@ io.on('connection', (socket) => {
                 const senderSocketId = onlineUsers.get(senderId);
                 if (senderSocketId) {
                     io.to(senderSocketId).emit('friendRequestResponded', { username: socket.data.userProfile.username, action });
-                    io.to(senderSocketId).emit('friendsList', await db.getFriendsList(senderId));
                 }
-                socket.emit('friendsList', await db.getFriendsList(userId));
             }
+            // Always refetch for both users
             const requests = await db.getPendingFriendRequests(userId);
             socket.emit('pendingRequestsData', requests);
         } catch (error) {
@@ -252,8 +253,10 @@ io.on('connection', (socket) => {
         try {
             await db.removeFriend(socket.data.userProfile.id, targetUserId);
             const friendSocketId = onlineUsers.get(targetUserId);
-            if (friendSocketId) io.to(friendSocketId).emit('friendsList', await db.getFriendsList(targetUserId));
-            socket.emit('friendsList', await db.getFriendsList(socket.data.userProfile.id));
+            if (friendSocketId) {
+                io.to(friendSocketId).emit('friendRequestResponded', { action: 'removed' }); // Notify other user
+            }
+            socket.emit('friendRequestResponded', { action: 'removed' }); // Refresh self
         } catch(error) { console.error("Remove Friend Error:", error); }
     });
 
@@ -310,7 +313,6 @@ io.on('connection', (socket) => {
             socket.data.roomId = roomId;
             socket.join(roomId);
             
-            // Pega o perfil completo para ter o título
             const userFullProfile = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
 
             const newPlayer = {
@@ -319,7 +321,7 @@ io.on('connection', (socket) => {
                 googleId: userFullProfile.google_id,
                 title_code: userFullProfile.selected_title_code,
                 playerId: `player-${room.players.length + 1}`,
-                userProfile: socket.data.userProfile // Armazena o perfil base para lógicas internas
+                userProfile: socket.data.userProfile
             };
             socket.data.userProfile.playerId = newPlayer.playerId;
             
@@ -344,8 +346,60 @@ io.on('connection', (socket) => {
             io.to(roomId).emit('chatMessage', { speaker: socket.data.userProfile.username, message });
         }
     });
-    
-    // ... (restante da lógica de jogo PvP será adicionada aqui se necessário)
+
+    socket.on('changeMode', (mode) => {
+        const roomId = socket.data.roomId;
+        const room = rooms[roomId];
+        if (room && room.hostId === socket.id) {
+            room.mode = mode;
+            io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
+        }
+    });
+
+    socket.on('startGame', () => {
+        const roomId = socket.data.roomId;
+        const room = rooms[roomId];
+        if (!room || room.hostId !== socket.id || room.gameStarted) return;
+
+        room.gameStarted = true;
+        io.emit('roomList', getPublicRoomsList());
+
+        const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
+        const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
+        const playerIdsInGame = room.players.map(p => p.playerId);
+        
+        const players = Object.fromEntries(
+            room.players.map((p, index) => [
+                p.playerId,
+                {
+                    id: p.playerId, name: p.username, pathId: index, position: 1,
+                    hand: [], resto: null, nextResto: null,
+                    effects: { score: null, movement: null },
+                    playedCards: { value: [], effect: [] },
+                    playedValueCardThisTurn: false, liveScore: 0,
+                    status: 'neutral', isEliminated: false
+                }
+            ])
+        );
+
+        const gameState = {
+            players, playerIdsInGame,
+            decks: { value: valueDeck, effect: effectDeck },
+            discardPiles: { value: [], effect: [] },
+            boardPaths: [], gamePhase: 'playing', gameMode: room.mode,
+            isPvp: true, currentPlayer: 'player-1', turn: 1,
+            log: [{ type: 'system', message: `Partida PvP iniciada! Modo: ${room.mode}` }],
+            consecutivePasses: 0,
+        };
+        
+        Object.values(gameState.players).forEach(player => {
+            for(let i=0; i < 3; i++) if(gameState.decks.value.length > 0) player.hand.push(gameState.decks.value.pop());
+            for(let i=0; i < 2; i++) if(gameState.decks.effect.length > 0) player.hand.push(gameState.decks.effect.pop());
+        });
+
+        room.gameState = gameState;
+        io.to(roomId).emit('gameStarted', gameState);
+    });
 
     const handleDisconnect = async () => {
         console.log(`Jogador desconectado: ${socket.id}`);
