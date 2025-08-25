@@ -76,10 +76,14 @@ async function ensureSchema() {
         xp                INT DEFAULT 0,
         level             INT DEFAULT 1,
         victories         INT DEFAULT 0,
-        defeats           INT DEFAULT 0
+        defeats           INT DEFAULT 0,
+        is_banned         BOOLEAN DEFAULT false,
+        selected_title_code TEXT,
+        highest_rank_achieved INT
       );
       ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_title_code TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS highest_rank_achieved INT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT false;
 
       CREATE TABLE IF NOT EXISTS user_match_history (
         id         SERIAL PRIMARY KEY,
@@ -138,6 +142,17 @@ async function ensureSchema() {
         sent_at      TIMESTAMPTZ DEFAULT now()
       );
       
+      CREATE TABLE IF NOT EXISTS chat_reports (
+        id                  SERIAL PRIMARY KEY,
+        reporter_user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        reported_user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        room_id             TEXT,
+        chat_context        JSONB,
+        status              TEXT DEFAULT 'pending', -- pending, resolved
+        created_at          TIMESTAMPTZ DEFAULT now()
+      );
+      ALTER TABLE chat_reports ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
+
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
     `;
     await client.query(sql);
@@ -473,11 +488,43 @@ async function getUserProfile(googleId, requesterId = null) {
   };
 }
 
+async function createChatReport(reporterId, reportedId, roomId, chatContext) {
+    await pool.query(
+        `INSERT INTO chat_reports (reporter_user_id, reported_user_id, room_id, chat_context)
+         VALUES ($1, $2, $3, $4)`,
+        [reporterId, reportedId, roomId, JSON.stringify(chatContext)]
+    );
+}
+
+async function getChatReports() {
+    const { rows } = await pool.query(`
+        SELECT r.id, r.created_at, r.chat_context, r.status,
+               reporter.username as reporter_username, 
+               reported.username as reported_username, 
+               reported.google_id as reported_google_id
+        FROM chat_reports r
+        JOIN users reporter ON r.reporter_user_id = reporter.id
+        JOIN users reported ON r.reported_user_id = reported.id
+        WHERE r.status = 'pending'
+        ORDER BY r.created_at ASC
+    `);
+    return rows;
+}
+
+async function updateChatReportStatus(reportId, status) {
+    await pool.query('UPDATE chat_reports SET status = $1 WHERE id = $2', [status, reportId]);
+}
+
+async function banUserByGoogleId(googleId) {
+    const { rows } = await pool.query('UPDATE users SET is_banned = true WHERE google_id = $1 RETURNING id', [googleId]);
+    return rows[0] ? rows[0].id : null;
+}
 
 module.exports = {
   ensureSchema, findOrCreateUser, addXp, addMatchToHistory, getTopPlayers,
   getUserProfile, testConnection, searchUsers, removeFriend, 
   getFriendsList, getFriendshipStatus, setSelectedTitle, 
   savePrivateMessage, getPrivateMessageHistory, updateUserRankAndTitles, grantTitleByCode,
-  sendFriendRequest, getPendingFriendRequests, respondToFriendRequest
+  sendFriendRequest, getPendingFriendRequests, respondToFriendRequest, createChatReport,
+  getChatReports, updateChatReportStatus, banUserByGoogleId
 };
