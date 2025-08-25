@@ -390,12 +390,37 @@ io.on('connection', (socket) => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         if (!room || room.hostId !== socket.id || room.gameStarted) return;
-
+    
         room.gameStarted = true;
         io.emit('roomList', getPublicRoomsList());
-
-        const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
-        const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
+    
+        const valueDeck = createDeck(VALUE_DECK_CONFIG, 'value');
+        const effectDeck = createDeck(EFFECT_DECK_CONFIG, 'effect');
+    
+        // Initial Draw Logic
+        let startingPlayerId;
+        let drawResults = {};
+        let tie = true;
+    
+        while (tie) {
+            const drawnCards = {};
+            const tempDeck = shuffle([...valueDeck]);
+            room.players.forEach(p => {
+                drawnCards[p.playerId] = tempDeck.pop();
+            });
+            drawResults = drawnCards;
+    
+            const sortedPlayers = [...room.players].sort((a, b) => drawnCards[b.playerId].value - drawnCards[a.playerId].value);
+    
+            if (sortedPlayers.length < 2 || drawnCards[sortedPlayers[0].playerId].value > drawnCards[sortedPlayers[1].playerId].value) {
+                tie = false;
+                startingPlayerId = sortedPlayers[0].playerId;
+            }
+        }
+    
+        shuffle(valueDeck);
+        shuffle(effectDeck);
+    
         const playerIdsInGame = room.players.map(p => p.playerId);
         
         const players = Object.fromEntries(
@@ -403,7 +428,9 @@ io.on('connection', (socket) => {
                 p.playerId,
                 {
                     id: p.playerId, name: p.username, pathId: index, position: 1,
-                    hand: [], resto: null, nextResto: null,
+                    hand: [], 
+                    resto: drawResults[p.playerId], // Resto is set from the draw
+                    nextResto: null,
                     effects: { score: null, movement: null },
                     playedCards: { value: [], effect: [] },
                     playedValueCardThisTurn: false, liveScore: 0,
@@ -411,28 +438,30 @@ io.on('connection', (socket) => {
                 }
             ])
         );
-
+    
+        Object.values(players).forEach(player => {
+            for(let i=0; i < 3; i++) if(valueDeck.length > 0) player.hand.push(valueDeck.pop());
+            for(let i=0; i < 2; i++) if(effectDeck.length > 0) player.hand.push(effectDeck.pop());
+        });
+    
         const boardPaths = generateBoardPaths();
         playerIdsInGame.forEach((id, index) => { 
             if(boardPaths[index]) boardPaths[index].playerId = id; 
         });
-
+    
         const gameState = {
             players, playerIdsInGame,
             decks: { value: valueDeck, effect: effectDeck },
             discardPiles: { value: [], effect: [] },
             boardPaths: boardPaths, 
-            gamePhase: 'playing', gameMode: room.mode,
-            isPvp: true, currentPlayer: 'player-1', turn: 1,
+            gamePhase: 'initial_draw', // New phase for the client to handle
+            gameMode: room.mode,
+            isPvp: true, currentPlayer: startingPlayerId, turn: 1,
             log: [{ type: 'system', message: `Partida PvP iniciada! Modo: ${room.mode}` }],
             consecutivePasses: 0,
+            drawResults: drawResults // Send draw results to clients
         };
-        
-        Object.values(gameState.players).forEach(player => {
-            for(let i=0; i < 3; i++) if(gameState.decks.value.length > 0) player.hand.push(gameState.decks.value.pop());
-            for(let i=0; i < 2; i++) if(gameState.decks.effect.length > 0) player.hand.push(gameState.decks.effect.pop());
-        });
-
+    
         room.gameState = gameState;
         io.to(roomId).emit('gameStarted', gameState);
     });
