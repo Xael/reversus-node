@@ -22,9 +22,25 @@ const rooms = {};
 const onlineUsers = new Map(); // Key: userId (DB id), Value: socket.id
 const userSockets = new Map(); // Key: socket.id, Value: userId (DB id)
 
-// --- LÓGICA DE JOGO (igual à anterior) ---
-// ... (as funções de lógica de jogo como createDeck, shuffle, etc. permanecem aqui) ...
-// ... (Para economizar espaço, elas foram omitidas, mas são as mesmas da sua versão anterior) ...
+// --- LÓGICA DE JOGO ---
+const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { value: 6, count: 8 }, { value: 8, count: 6 }, { value: 10, count: 4 }];
+const EFFECT_DECK_CONFIG = [{ name: 'Mais', count: 4 }, { name: 'Menos', count: 4 }, { name: 'Sobe', count: 4 }, { name: 'Desce', count: 4 }, { name: 'Pula', count: 4 }, { name: 'Reversus', count: 4 }, { name: 'Reversus Total', count: 1 }];
+
+function createDeck(config, cardType) {
+    let idCounter = 0;
+    return config.flatMap(item => Array.from({ length: item.count }, () => {
+        const cardData = 'value' in item ? { name: item.value, value: item.value } : { name: item.name };
+        return { id: Date.now() + Math.random() + idCounter++, type: cardType, ...cardData };
+    }));
+};
+
+function shuffle(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+    }
+    return array;
+};
 
 // --- FUNÇÕES HELPER DO SERVIDOR ---
 function getLobbyDataForRoom(room) {
@@ -71,7 +87,6 @@ io.on('connection', (socket) => {
             const payload = ticket.getPayload();
             const userProfile = await db.findOrCreateUser(payload);
             
-            // Lógica de Desconexão Forçada
             if (onlineUsers.has(userProfile.id)) {
                 const oldSocketId = onlineUsers.get(userProfile.id);
                 const oldSocket = io.sockets.sockets.get(oldSocketId);
@@ -87,7 +102,6 @@ io.on('connection', (socket) => {
             socket.data.userProfile = userProfile;
             socket.emit('loginSuccess', await db.getUserProfile(userProfile.google_id, userProfile.id));
 
-            // Notifica amigos que o usuário ficou online
             const friends = await db.getFriendsList(userProfile.id);
             friends.forEach(friend => {
                 const friendSocketId = onlineUsers.get(friend.id);
@@ -125,7 +139,6 @@ io.on('connection', (socket) => {
     socket.on('viewProfile', async ({ googleId }) => {
         if (!socket.data.userProfile || !googleId) return;
         try {
-            // FIX: Use the provided googleId to get the correct profile
             const profileData = await db.getUserProfile(googleId, socket.data.userProfile.id);
             socket.emit('viewProfileData', profileData);
         } catch (error) {
@@ -138,7 +151,6 @@ io.on('connection', (socket) => {
         if (!socket.data.userProfile) return;
         try {
             await db.setSelectedTitle(socket.data.userProfile.id, titleCode);
-            // Re-envia o perfil atualizado
             const profileData = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
             socket.emit('profileData', profileData);
         } catch (error) {
@@ -152,14 +164,12 @@ io.on('connection', (socket) => {
         if (!room) return;
     
         const winnerClient = room.players.find(p => p.playerId === winnerId);
-        // Only process if the winner is a real player with a profile
         if (!winnerClient || !winnerClient.userProfile) return;
     
         try {
             const winnerUserId = winnerClient.userProfile.id;
             const winnerGoogleId = winnerClient.userProfile.google_id;
     
-            // 1. Conceder XP, registrar vitória
             await db.addXp(winnerGoogleId, 100);
             await db.addMatchToHistory(winnerGoogleId, {
                 outcome: 'Vitória',
@@ -167,7 +177,6 @@ io.on('connection', (socket) => {
                 opponents: 'Jogadores Online'
             });
     
-            // 2. Atualizar o rank e conceder títulos de ranking
             await db.updateUserRankAndTitles(winnerUserId);
     
         } catch (error) {
@@ -177,15 +186,12 @@ io.on('connection', (socket) => {
     });
 
     // --- EVENTOS SOCIAIS (AMIGOS E CHAT) ---
-
     socket.on('searchUsers', async ({ query }) => {
         if (!socket.data.userProfile) return;
         try {
             const results = await db.searchUsers(query, socket.data.userProfile.id);
             socket.emit('searchResults', results);
-        } catch (error) {
-            console.error("Search Error:", error);
-        }
+        } catch (error) { console.error("Search Error:", error); }
     });
 
     socket.on('sendFriendRequest', async ({ targetUserId }) => {
@@ -204,7 +210,6 @@ io.on('connection', (socket) => {
                     });
                 }
             }
-            // FIX: Send a success confirmation back to the sender
             socket.emit('requestSent');
         } catch (error) {
             console.error("Send Friend Request Error:", error);
@@ -217,9 +222,7 @@ io.on('connection', (socket) => {
         try {
             const requests = await db.getPendingFriendRequests(socket.data.userProfile.id);
             socket.emit('pendingRequestsData', requests);
-        } catch (error) {
-            console.error("Get Pending Requests Error:", error);
-        }
+        } catch (error) { console.error("Get Pending Requests Error:", error); }
     });
 
     socket.on('respondToRequest', async ({ requestId, action }) => {
@@ -229,19 +232,15 @@ io.on('connection', (socket) => {
             const senderId = await db.respondToFriendRequest(requestId, userId, action);
             
             if (senderId) {
-                // Notificar o remetente da resposta
                 const senderSocketId = onlineUsers.get(senderId);
                 if (senderSocketId) {
                     io.to(senderSocketId).emit('friendRequestResponded', { username: socket.data.userProfile.username, action });
-                    // Atualizar a lista de amigos de ambos
                     io.to(senderSocketId).emit('friendsList', await db.getFriendsList(senderId));
                 }
                 socket.emit('friendsList', await db.getFriendsList(userId));
             }
-            // Atualizar a lista de pedidos pendentes para o usuário que respondeu
             const requests = await db.getPendingFriendRequests(userId);
             socket.emit('pendingRequestsData', requests);
-
         } catch (error) {
             console.error("Respond to Request Error:", error);
             socket.emit('error', 'Não foi possível responder ao pedido.');
@@ -252,7 +251,6 @@ io.on('connection', (socket) => {
         if (!socket.data.userProfile) return;
         try {
             await db.removeFriend(socket.data.userProfile.id, targetUserId);
-             // Atualiza a lista de amigos para ambos
             const friendSocketId = onlineUsers.get(targetUserId);
             if (friendSocketId) io.to(friendSocketId).emit('friendsList', await db.getFriendsList(targetUserId));
             socket.emit('friendsList', await db.getFriendsList(socket.data.userProfile.id));
@@ -280,17 +278,74 @@ io.on('connection', (socket) => {
             if (recipientSocketId) {
                 io.to(recipientSocketId).emit('privateMessage', { ...messageData, recipientId });
             }
-
-            // FIX: Send the message back to the sender so they can see it too
             socket.emit('privateMessage', { ...messageData, recipientId });
-        } catch (error) {
-            console.error("Send Message Error:", error);
+        } catch (error) { console.error("Send Message Error:", error); }
+    });
+    
+    // --- LÓGICA DE SALAS E JOGO PVP ---
+    socket.on('listRooms', () => { socket.emit('roomList', getPublicRoomsList()); });
+
+    socket.on('createRoom', () => {
+        if (!socket.data.userProfile) {
+            return socket.emit('error', 'Você precisa estar logado para criar uma sala.');
+        }
+        const username = socket.data.userProfile.username;
+        const roomId = `room-${Date.now()}`;
+        const roomName = `Sala de ${username}`;
+        rooms[roomId] = {
+            id: roomId, name: roomName, hostId: socket.id, players: [],
+            gameStarted: false, mode: 'solo-4p', gameState: null
+        };
+        console.log(`Sala criada: ${roomId} por ${username}`);
+        socket.emit('roomCreated', roomId);
+        io.emit('roomList', getPublicRoomsList());
+    });
+
+    socket.on('joinRoom', async ({ roomId }) => {
+        if (!socket.data.userProfile) {
+            return socket.emit('error', 'Você precisa estar logado para entrar em uma sala.');
+        }
+        const room = rooms[roomId];
+        if (room && !room.gameStarted && room.players.length < 4) {
+            socket.data.roomId = roomId;
+            socket.join(roomId);
+            
+            // Pega o perfil completo para ter o título
+            const userFullProfile = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
+
+            const newPlayer = {
+                id: socket.id,
+                username: userFullProfile.username,
+                googleId: userFullProfile.google_id,
+                title_code: userFullProfile.selected_title_code,
+                playerId: `player-${room.players.length + 1}`,
+                userProfile: socket.data.userProfile // Armazena o perfil base para lógicas internas
+            };
+            socket.data.userProfile.playerId = newPlayer.playerId;
+            
+            room.players.push(newPlayer);
+            io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
+            io.emit('roomList', getPublicRoomsList());
+        } else {
+            socket.emit('error', 'A sala está cheia, já começou ou não existe.');
+        }
+    });
+
+    socket.on('lobbyChatMessage', (message) => {
+        const roomId = socket.data.roomId;
+        if (roomId && rooms[roomId] && socket.data.userProfile) {
+            io.to(roomId).emit('lobbyChatMessage', { speaker: socket.data.userProfile.username, message });
+        }
+    });
+
+    socket.on('chatMessage', (message) => {
+        const roomId = socket.data.roomId;
+        if (roomId && rooms[roomId] && socket.data.userProfile) {
+            io.to(roomId).emit('chatMessage', { speaker: socket.data.userProfile.username, message });
         }
     });
     
-    // --- LÓGICA DE SALAS E JOGO PVP (mesma da sua versão anterior) ---
-    // ... (o código de 'listRooms', 'createRoom', 'joinRoom', 'startGame', etc. permanece aqui) ...
-    // ... (Para economizar espaço, elas foram omitidas, mas são as mesmas da sua versão anterior) ...
+    // ... (restante da lógica de jogo PvP será adicionada aqui se necessário)
 
     const handleDisconnect = async () => {
         console.log(`Jogador desconectado: ${socket.id}`);
@@ -299,7 +354,6 @@ io.on('connection', (socket) => {
             onlineUsers.delete(userId);
             userSockets.delete(socket.id);
 
-            // Notifica amigos que o usuário ficou offline
             try {
                 const friends = await db.getFriendsList(userId);
                 friends.forEach(friend => {
@@ -315,7 +369,21 @@ io.on('connection', (socket) => {
         
         const roomId = socket.data.roomId;
         if (!roomId || !rooms[roomId]) return;
-        // ... (resto da lógica de desconexão da sala) ...
+
+        const room = rooms[roomId];
+        room.players = room.players.filter(p => p.id !== socket.id);
+    
+        if (room.players.length === 0) {
+            console.log(`Sala vazia ${roomId}, deletando.`);
+            delete rooms[roomId];
+        } else {
+            if (socket.id === room.hostId) {
+                room.hostId = room.players[0].id;
+                console.log(`Host desconectado, novo host é ${room.hostId}`);
+            }
+            io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
+        }
+        io.emit('roomList', getPublicRoomsList());
     };
 
     socket.on('leaveRoom', handleDisconnect);
