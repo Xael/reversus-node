@@ -204,6 +204,7 @@ io.on('connection', (socket) => {
                     });
                 }
             }
+            // FIX: Send a success confirmation back to the sender
             socket.emit('requestSent');
         } catch (error) {
             console.error("Send Friend Request Error:", error);
