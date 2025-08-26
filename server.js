@@ -261,9 +261,7 @@ function getLobbyDataForRoom(room) {
             username: p.username, 
             playerId: p.playerId,
             googleId: p.googleId,
-            title_code: p.title_code,
-            avatar_url: p.avatar_url,
-            level: p.level
+            title_code: p.title_code
         })),
         mode: room.mode,
     };
@@ -297,18 +295,7 @@ io.on('connection', (socket) => {
         try {
             const ticket = await client.verifyIdToken({ idToken: token, audience: GOOGLE_CLIENT_ID });
             const payload = ticket.getPayload();
-            let userProfile = await db.findOrCreateUser(payload);
-
-            if (userProfile.is_banned) {
-                return socket.emit('loginError', 'Esta conta foi permanentemente banida.');
-            }
-
-            // Flag de admin é verificada no servidor, nunca confiando no cliente.
-            if (payload.email === 'alexblbn@gmail.com') {
-                userProfile.isAdmin = true;
-            } else {
-                userProfile.isAdmin = false;
-            }
+            const userProfile = await db.findOrCreateUser(payload);
             
             if (onlineUsers.has(userProfile.id)) {
                 const oldSocketId = onlineUsers.get(userProfile.id);
@@ -323,9 +310,7 @@ io.on('connection', (socket) => {
             userSockets.set(socket.id, userProfile.id);
             
             socket.data.userProfile = userProfile;
-            const fullProfile = await db.getUserProfile(userProfile.google_id, userProfile.id);
-            fullProfile.isAdmin = userProfile.isAdmin; // Adiciona a flag de admin ao perfil enviado
-            socket.emit('loginSuccess', fullProfile);
+            socket.emit('loginSuccess', await db.getUserProfile(userProfile.google_id, userProfile.id));
 
             const friends = await db.getFriendsList(userProfile.id);
             friends.forEach(friend => {
@@ -340,64 +325,6 @@ io.on('connection', (socket) => {
             socket.emit('loginError', 'Falha na autenticação.');
         }
     });
-
-    // --- ADMIN HANDLERS ---
-    socket.on('admin:getReports', async () => {
-        if (!socket.data.userProfile?.isAdmin) return;
-        try {
-            const reports = await db.getChatReports();
-            socket.emit('admin:reportsData', reports);
-        } catch (error) {
-            console.error('Admin Get Reports Error:', error);
-            socket.emit('error', 'Falha ao buscar denúncias.');
-        }
-    });
-
-    socket.on('admin:updateReportStatus', async ({ reportId, status }) => {
-        if (!socket.data.userProfile?.isAdmin) return;
-        try {
-            await db.updateChatReportStatus(reportId, status);
-            const reports = await db.getChatReports(); // Re-fetch para atualizar a UI do admin
-            socket.emit('admin:reportsData', reports);
-        } catch (error) {
-            console.error('Admin Update Report Status Error:', error);
-            socket.emit('error', 'Falha ao atualizar status da denúncia.');
-        }
-    });
-
-    socket.on('admin:banUser', async ({ googleId }) => {
-        if (!socket.data.userProfile?.isAdmin) return;
-        try {
-            const bannedUserId = await db.banUserByGoogleId(googleId);
-            if (bannedUserId) {
-                const targetSocketId = onlineUsers.get(bannedUserId);
-                if (targetSocketId) {
-                    const targetSocket = io.sockets.sockets.get(targetSocketId);
-                    if (targetSocket) {
-                        targetSocket.emit('forceDisconnect', 'Sua conta foi permanentemente banida por violar os termos de conduta.');
-                        targetSocket.disconnect();
-                    }
-                }
-            }
-            const reports = await db.getChatReports(); // Re-fetch para atualizar a UI do admin
-            socket.emit('admin:reportsData', reports);
-        } catch (error) {
-            console.error('Admin Ban User Error:', error);
-            socket.emit('error', 'Falha ao banir usuário.');
-        }
-    });
-
-    socket.on('admin:searchUsers', async ({ query }) => {
-        if (!socket.data.userProfile?.isAdmin) return;
-        try {
-            const users = await db.searchUsers(query, socket.data.userProfile.id);
-            socket.emit('admin:userSearchResults', users);
-        } catch (error) {
-            console.error('Admin Search User Error:', error);
-            socket.emit('error', 'Falha ao buscar usuário.');
-        }
-    });
-
     
     socket.on('getRanking', async ({ page = 1 } = {}) => {
         try {
@@ -412,7 +339,6 @@ io.on('connection', (socket) => {
         if (!socket.data.userProfile) return;
         try {
             const profileData = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
-            profileData.isAdmin = socket.data.userProfile.isAdmin;
             socket.emit('profileData', profileData);
         } catch (error) {
             socket.emit('error', 'Não foi possível carregar seu perfil.');
@@ -435,7 +361,6 @@ io.on('connection', (socket) => {
         try {
             await db.setSelectedTitle(socket.data.userProfile.id, titleCode);
             const profileData = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
-            profileData.isAdmin = socket.data.userProfile.isAdmin;
             socket.emit('profileData', profileData);
         } catch (error) {
              socket.emit('error', 'Não foi possível selecionar o título.');
@@ -578,8 +503,7 @@ io.on('connection', (socket) => {
         const roomName = `Sala de ${username}`;
         rooms[roomId] = {
             id: roomId, name: roomName, hostId: socket.id, players: [],
-            gameStarted: false, mode: 'solo-4p', gameState: null,
-            chatHistory: [] // Adiciona histórico de chat para o lobby
+            gameStarted: false, mode: 'solo-4p', gameState: null
         };
         console.log(`Sala criada: ${roomId} por ${username}`);
         socket.emit('roomCreated', roomId);
@@ -602,8 +526,6 @@ io.on('connection', (socket) => {
                 username: userFullProfile.username,
                 googleId: userFullProfile.google_id,
                 title_code: userFullProfile.selected_title_code,
-                avatar_url: userFullProfile.avatar_url,
-                level: userFullProfile.level,
                 playerId: `player-${room.players.length + 1}`,
                 userProfile: socket.data.userProfile
             };
@@ -620,58 +542,14 @@ io.on('connection', (socket) => {
     socket.on('lobbyChatMessage', (message) => {
         const roomId = socket.data.roomId;
         if (roomId && rooms[roomId] && socket.data.userProfile) {
-            const chatEntry = {
-                speaker: socket.data.userProfile.username,
-                message,
-                speakerId: socket.data.userProfile.id,
-                timestamp: new Date()
-            };
-            if (!rooms[roomId].chatHistory) rooms[roomId].chatHistory = [];
-            rooms[roomId].chatHistory.push(chatEntry);
-            if (rooms[roomId].chatHistory.length > 50) rooms[roomId].chatHistory.shift();
-            
-            io.to(roomId).emit('lobbyChatMessage', chatEntry);
+            io.to(roomId).emit('lobbyChatMessage', { speaker: socket.data.userProfile.username, message });
         }
     });
 
     socket.on('chatMessage', (message) => {
         const roomId = socket.data.roomId;
-        const room = rooms[roomId];
-        const userProfile = socket.data.userProfile;
-        if (room && room.gameState && userProfile) {
-            const chatEntry = {
-                type: 'dialogue',
-                speaker: userProfile.username,
-                message,
-                speakerId: userProfile.id
-            };
-            room.gameState.log.unshift(chatEntry);
-            if (room.gameState.log.length > 50) room.gameState.log.pop();
-            
-            io.to(roomId).emit('chatMessage', chatEntry);
-        }
-    });
-
-    socket.on('reportChat', async ({ reportedUserId }) => {
-        const roomId = socket.data.roomId;
-        const reporterProfile = socket.data.userProfile;
-        if (!roomId || !rooms[roomId] || !reporterProfile || !reportedUserId) {
-            return socket.emit('reportConfirmation', { success: false, message: 'Não foi possível enviar a denúncia (dados incompletos).' });
-        }
-    
-        const room = rooms[roomId];
-        const chatHistory = room.gameState ? room.gameState.log : room.chatHistory;
-    
-        if (!chatHistory || chatHistory.length === 0) {
-            return socket.emit('reportConfirmation', { success: false, message: 'Não foi possível encontrar o histórico de chat para a denúncia.' });
-        }
-    
-        try {
-            await db.createChatReport(reporterProfile.id, reportedUserId, roomId, chatHistory.slice(0, 20)); // Pega as últimas 20 mensagens
-            socket.emit('reportConfirmation', { success: true, message: 'Denúncia enviada com sucesso. Agradecemos sua colaboração.' });
-        } catch (error) {
-            console.error("Report Chat DB Error:", error);
-            socket.emit('reportConfirmation', { success: false, message: 'Ocorreu um erro ao enviar sua denúncia.' });
+        if (roomId && rooms[roomId] && socket.data.userProfile) {
+            io.to(roomId).emit('chatMessage', { speaker: socket.data.userProfile.username, message });
         }
     });
 
@@ -776,122 +654,153 @@ io.on('connection', (socket) => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
-        if (!room || !player || !room.gameState || room.gameState.currentPlayer !== player.playerId) return;
-    
-        const pState = room.gameState.players[player.playerId];
-        const cardIndex = pState.hand.findIndex(c => c.id === cardId);
+        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
+
+        const playerState = room.gameState.players[player.playerId];
+        const cardIndex = playerState.hand.findIndex(c => c.id === cardId);
         if (cardIndex === -1) return;
-    
-        const card = pState.hand[cardIndex]; // This is a reference to the card in the state
-    
-        // CORRECT: Modify the card object in the state BEFORE doing anything else
-        if (options.isIndividualLock && card.name === 'Reversus Total' && options.effectNameToApply) {
-            card.isLocked = true;
-            card.lockedEffect = options.effectNameToApply;
-        }
-    
-        // CORRECT: Robustly determine the target slot for animation
+
+        const [card] = playerState.hand.splice(cardIndex, 1);
+        room.gameState.consecutivePasses = 0;
+        
+        let cardDestinationPlayer = room.gameState.players[targetId];
+
+        // --- EMIT ANIMATION EVENT ---
         let targetSlotLabel;
         if (card.type === 'value') {
-            targetSlotLabel = pState.playedCards.value.length === 0 ? 'Valor 1' : 'Valor 2';
+            targetSlotLabel = playerState.playedCards.value.length === 0 ? 'Valor 1' : 'Valor 2';
         } else {
-            const effectNameToApply = card.isLocked ? card.lockedEffect : card.name;
-            const effectTypeToReverse = options.effectType || null;
-            
-            if (['Mais', 'Menos'].includes(effectNameToApply) || (card.name === 'Reversus' && effectTypeToReverse === 'score')) {
+            const effectName = options.isIndividualLock ? options.effectNameToApply : card.name;
+            const isScoreEffect = ['Mais', 'Menos'].includes(effectName) || (card.name === 'Reversus' && options.effectType === 'score');
+            if (isScoreEffect) {
                 targetSlotLabel = 'Pontuação';
-            } else if (['Sobe', 'Desce', 'Pula'].includes(effectNameToApply) || (card.name === 'Reversus' && effectTypeToReverse === 'movement')) {
-                targetSlotLabel = 'Movimento';
-            } else {
+            } else if (card.name === 'Reversus Total' && !options.isIndividualLock) {
                 targetSlotLabel = 'Reversus T.';
+            } else {
+                targetSlotLabel = 'Movimento';
             }
         }
-    
-        io.to(roomId).emit('cardPlayedAnimation', { casterId: pState.id, targetId, card, targetSlotLabel });
-    
-        // Update state
-        pState.hand.splice(cardIndex, 1);
-        room.gameState.consecutivePasses = 0;
-    
+        io.to(roomId).emit('cardPlayedAnimation', {
+            casterId: player.playerId, targetId, card, targetSlotLabel
+        });
+
+
+        // --- UPDATE GAME STATE ---
         if (card.type === 'value') {
-            pState.playedCards.value.push(card);
-            pState.playedValueCardThisTurn = true;
-            pState.nextResto = card;
+            playerState.playedCards.value.push(card);
+            playerState.playedValueCardThisTurn = true;
+            playerState.nextResto = card;
+            room.gameState.log.unshift({ type: 'system', message: `${playerState.name} jogou a carta de valor ${card.name}.` });
         } else {
-            const destinationPlayer = room.gameState.players[targetId];
-            if(destinationPlayer) destinationPlayer.playedCards.effect.push(card);
-            applyEffect(room.gameState, card, targetId, player.username, options.effectType, options);
+            if (options.isIndividualLock) card.isLocked = true;
+            if (card.name === 'Pula' && options.pulaPath !== undefined) {
+                 cardDestinationPlayer.targetPathForPula = options.pulaPath;
+            }
+            if (card.name === 'Reversus') card.reversedEffectType = options.effectType;
+            
+            cardDestinationPlayer.playedCards.effect.push(card);
+            applyEffect(room.gameState, card, targetId, playerState.name, options.effectType, options);
         }
-    
+        
         broadcastGameState(roomId);
     });
-
+    
     socket.on('endTurn', () => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
-        if (!room || !player || !room.gameState || room.gameState.currentPlayer !== player.playerId) return;
+        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
 
         room.gameState.consecutivePasses++;
-
+        
         const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
-        if(activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length){
+        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length) {
             calculateScoresAndEndRound(room);
         } else {
             let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
-            let nextIndex;
+            let nextIndex = currentIndex;
             do {
-                nextIndex = (currentIndex + 1) % room.gameState.playerIdsInGame.length;
-                currentIndex = nextIndex;
+                nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
             } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
             room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+            room.gameState.players[room.gameState.currentPlayer].playedValueCardThisTurn = false;
+            
             broadcastGameState(roomId);
         }
     });
 
-    socket.on('disconnect', () => {
+    const handleDisconnect = async () => {
         console.log(`Jogador desconectado: ${socket.id}`);
         const userId = userSockets.get(socket.id);
         if (userId) {
             onlineUsers.delete(userId);
             userSockets.delete(socket.id);
 
-            db.getFriendsList(userId).then(friends => {
-                 friends.forEach(friend => {
+            try {
+                const friends = await db.getFriendsList(userId);
+                friends.forEach(friend => {
                     const friendSocketId = onlineUsers.get(friend.id);
                     if (friendSocketId) {
                         io.to(friendSocketId).emit('friendStatusUpdate', { userId, isOnline: false });
                     }
                 });
-            }).catch(console.error);
+            } catch (error) {
+                console.error("Error notifying friends on disconnect:", error);
+            }
         }
-
+        
         const roomId = socket.data.roomId;
+        if (!roomId || !rooms[roomId]) return;
+
         const room = rooms[roomId];
-        if (room) {
-            const playerIndex = room.players.findIndex(p => p.id === socket.id);
-            if (playerIndex > -1) {
-                room.players.splice(playerIndex, 1);
-                if (room.gameStarted) {
-                     // Handle disconnect during a match (e.g., end game, declare winner)
-                     io.to(roomId).emit('playerDisconnected', { message: 'Um jogador se desconectou. A partida foi encerrada.' });
-                     delete rooms[roomId];
-                } else if (room.players.length === 0) {
-                    delete rooms[roomId]; // Delete empty rooms
+        const disconnectedPlayer = room.players.find(p => p.id === socket.id);
+        if (!disconnectedPlayer) return;
+
+        if (room.gameStarted && room.gameState) {
+            const playerState = room.gameState.players[disconnectedPlayer.playerId];
+            if (playerState && !playerState.isEliminated) {
+                playerState.isEliminated = true;
+                room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} se desconectou e foi eliminado.`});
+                
+                const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
+                if (activePlayers.length <= 1) {
+                    const winnerId = activePlayers.length === 1 ? activePlayers[0] : null;
+                    const winnerName = winnerId ? room.gameState.players[winnerId].name : "Ninguém";
+                    io.to(roomId).emit('gameOver', { message: `${winnerName} venceu por W.O.!`, winnerId });
+                    delete rooms[roomId];
                 } else {
-                    if (room.hostId === socket.id) {
-                        room.hostId = room.players[0].id; // New host
-                    }
-                    io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
+                   if (room.gameState.currentPlayer === disconnectedPlayer.playerId) {
+                       let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
+                       let nextIndex = currentIndex;
+                       do {
+                           nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
+                       } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
+                       room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+                   }
+                   broadcastGameState(roomId);
                 }
             }
-             io.emit('roomList', getPublicRoomsList());
+        } else {
+            room.players = room.players.filter(p => p.id !== socket.id);
+            if (room.players.length === 0) {
+                delete rooms[roomId];
+            } else {
+                if (room.hostId === socket.id) room.hostId = room.players[0].id;
+                io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
+            }
         }
-    });
+        io.emit('roomList', getPublicRoomsList());
+    };
+
+    socket.on('leaveRoom', handleDisconnect);
+    socket.on('disconnect', handleDisconnect);
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
-  db.testConnection();
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`--- SERVIDOR DE JOGO REVERSUS ONLINE ---`);
+    console.log(`O servidor está rodando e escutando na porta: ${PORT}`);
+    console.log(`Aguardando conexões de jogadores...`);
+    console.log('------------------------------------');
+    db.testConnection();
 });
