@@ -261,7 +261,9 @@ function getLobbyDataForRoom(room) {
             username: p.username, 
             playerId: p.playerId,
             googleId: p.googleId,
-            title_code: p.title_code
+            title_code: p.title_code,
+            avatar_url: p.avatar_url,
+            level: p.level
         })),
         mode: room.mode,
     };
@@ -600,6 +602,8 @@ io.on('connection', (socket) => {
                 username: userFullProfile.username,
                 googleId: userFullProfile.google_id,
                 title_code: userFullProfile.selected_title_code,
+                avatar_url: userFullProfile.avatar_url,
+                level: userFullProfile.level,
                 playerId: `player-${room.players.length + 1}`,
                 userProfile: socket.data.userProfile
             };
