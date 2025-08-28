@@ -80,6 +80,9 @@ async function ensureSchema() {
       );
       ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_title_code TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS highest_rank_achieved INT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS coinversus INT DEFAULT 0;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login DATE;
+
 
       CREATE TABLE IF NOT EXISTS user_match_history (
         id         SERIAL PRIMARY KEY,
@@ -138,6 +141,7 @@ async function ensureSchema() {
         sent_at      TIMESTAMPTZ DEFAULT now()
       );
       
+      CREATE INDEX IF NOT EXISTS idx_users_coinversus ON users (coinversus DESC);
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
     `;
     await client.query(sql);
@@ -175,18 +179,48 @@ async function ensureSchema() {
 
 async function findOrCreateUser(googlePayload) {
   const { sub: googleId, name, picture: avatarUrl, email } = googlePayload;
+  const client = await pool.connect();
   
-  let res = await pool.query(`SELECT * FROM users WHERE google_id = $1`, [googleId]);
-  
-  if (res.rows.length === 0) {
-    res = await pool.query(
-      `INSERT INTO users (google_id, username, avatar_url) VALUES ($1, $2, $3)
-       RETURNING *`,
-      [googleId, name, avatarUrl]
-    );
+  try {
+    await client.query('BEGIN');
+    let res = await client.query(`SELECT * FROM users WHERE google_id = $1`, [googleId]);
+    let user;
+    
+    if (res.rows.length === 0) {
+      res = await client.query(
+        `INSERT INTO users (google_id, username, avatar_url) VALUES ($1, $2, $3)
+         RETURNING *`,
+        [googleId, name, avatarUrl]
+      );
+      user = res.rows[0];
+    } else {
+      user = res.rows[0];
+    }
+
+    // Lógica de Login Diário
+    const today = new Date().toISOString().split('T')[0];
+    const lastLogin = user.last_login ? new Date(user.last_login).toISOString().split('T')[0] : null;
+
+    if (lastLogin !== today) {
+        const dailyReward = 100;
+        const updatedUserRes = await client.query(
+            `UPDATE users 
+             SET last_login = $1, coinversus = coinversus + $2 
+             WHERE id = $3
+             RETURNING *`,
+            [today, dailyReward, user.id]
+        );
+        user = updatedUserRes.rows[0];
+    }
+
+    await client.query('COMMIT');
+    return user;
+  } catch(e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
-  
-  return res.rows[0];
 }
 
 async function addXp(googleId, amount) {
@@ -220,6 +254,18 @@ async function addMatchToHistory(googleId, matchData) {
   }
 }
 
+async function updateCoinVersus(userId, amount) {
+    const res = await pool.query(
+        `UPDATE users SET coinversus = coinversus + $1 WHERE id = $2 RETURNING coinversus`,
+        [amount, userId]
+    );
+    if (res.rows.length === 0) {
+        throw new Error(`User with ID ${userId} not found for coin update.`);
+    }
+    return res.rows[0].coinversus;
+}
+
+
 async function updateUserRankAndTitles(userId) {
     const client = await pool.connect();
     try {
@@ -228,7 +274,7 @@ async function updateUserRankAndTitles(userId) {
         // Etapa 1: Encontrar o novo rank do usuário
         const rankRes = await client.query(
             `SELECT rank FROM (
-                SELECT id, RANK() OVER (ORDER BY victories DESC, id ASC) as rank
+                SELECT id, RANK() OVER (ORDER BY coinversus DESC, id ASC) as rank
                 FROM users
             ) as ranked_users WHERE id = $1`,
             [userId]
@@ -287,8 +333,8 @@ async function getTopPlayers(page = 1, limit = 10) {
   const totalPages = Math.ceil(totalPlayers / limit);
 
   const playersRes = await pool.query(
-    `SELECT u.google_id, u.username, u.avatar_url, u.victories, u.selected_title_code,
-     RANK() OVER (ORDER BY u.victories DESC, u.id ASC) as rank
+    `SELECT u.google_id, u.username, u.avatar_url, u.coinversus, u.selected_title_code,
+     RANK() OVER (ORDER BY u.coinversus DESC, u.id ASC) as rank
      FROM users u
      ORDER BY rank
      LIMIT $1 OFFSET $2`,
@@ -479,5 +525,5 @@ module.exports = {
   getUserProfile, testConnection, searchUsers, removeFriend, 
   getFriendsList, getFriendshipStatus, setSelectedTitle, 
   savePrivateMessage, getPrivateMessageHistory, updateUserRankAndTitles, grantTitleByCode,
-  sendFriendRequest, getPendingFriendRequests, respondToFriendRequest
+  sendFriendRequest, getPendingFriendRequests, respondToFriendRequest, updateCoinVersus
 };
