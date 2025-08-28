@@ -3,54 +3,24 @@ const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const { OAuth2Client } = require('google-auth-library');
-const cors = require('cors'); // Importa a biblioteca CORS
 const db = require('./db.js');
 
 const app = express();
-
-// --- Configuração de CORS Robusta ---
-const allowedOrigins = [
-    "https://reversus.online",
-    "https://reversus-game.dke42d.easypanel.host",
-    "http://localhost:8080"
-];
-
-const corsOptions = {
-    origin: function (origin, callback) {
-        // Permite requisições sem 'origin' (ex: apps mobile, Postman) ou da nossa whitelist
-        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    credentials: true // Essencial para o login com Google
-};
-
-// Aplica o middleware CORS para todas as rotas HTTP
-app.use(cors(corsOptions));
-
 const server = http.createServer(app);
 
 const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-// Usa as mesmas opções de CORS para o Socket.IO
 const io = new Server(server, {
-  cors: corsOptions
+  cors: {
+    origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host", "http://localhost:8080"],
+    methods: ["GET", "POST"]
+  }
 });
-
 
 const rooms = {};
 const onlineUsers = new Map(); // Key: userId (DB id), Value: socket.id
 const userSockets = new Map(); // Key: socket.id, Value: userId (DB id)
-
-const quickPvpQueues = {
-    '1v1': [],
-    '2v2': [],
-    '4p': []
-};
-const playerQueueMap = new Map(); // socket.id -> mode
 
 // --- LÓGICA DE JOGO ---
 const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { value: 6, count: 8 }, { value: 8, count: 6 }, { value: 10, count: 4 }];
@@ -164,60 +134,24 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
      gameState.log.unshift({ type: 'system', message: `${casterName} usou ${originalCardName} em ${target.name}.` });
 };
 
-const checkGameEnd = async (room) => {
+const checkGameEnd = (room) => {
     const { gameState } = room;
     const gameWinners = gameState.playerIdsInGame.filter(id => !gameState.players[id].isEliminated && gameState.players[id].position >= WINNING_POSITION);
     
     if (gameWinners.length > 0) {
         gameState.gamePhase = 'game_over';
         const winnerNames = gameWinners.map(id => gameState.players[id].name).join(' e ');
-        let message = `${winnerNames} venceu o jogo!`;
-
-        if (gameState.isBettingMatch && gameState.pot > 0) {
-            const potPerWinner = Math.floor(gameState.pot / gameWinners.length);
-            for (const winnerId of gameWinners) {
-                const winnerClient = room.players.find(p => p.playerId === winnerId);
-                if (winnerClient) {
-                    await db.updateCoinVersus(winnerClient.userProfile.id, potPerWinner);
-                }
-            }
-            message = `${winnerNames} venceu o jogo e ganhou ${gameState.pot} CoinVersus!`;
-        }
-        
-        io.to(room.id).emit('gameOver', { message, winnerId: gameWinners[0] });
+        io.to(room.id).emit('gameOver', { message: `${winnerNames} venceu o jogo!`, winnerId: gameWinners[0] });
         delete rooms[room.id];
         return true;
     }
     return false;
 };
 
-const startNewRound = async (room) => {
+const startNewRound = (room) => {
     const { gameState } = room;
     gameState.turn++;
     gameState.log.unshift({ type: 'system', message: `--- Iniciando Rodada ${gameState.turn} ---`});
-
-    if (gameState.isBettingMatch) {
-        const betIncrease = gameState.turn; // Aposta = número da casa (rodada)
-        gameState.log.unshift({ type: 'system', message: `Aposta da rodada aumentada em ${betIncrease} CoinVersus por jogador.` });
-
-        for (const p of room.players) {
-            const playerState = gameState.players[p.playerId];
-            if (playerState && !playerState.isEliminated) {
-                try {
-                    const user = await db.getUserProfile(p.userProfile.google_id);
-                    if (user.coinversus >= betIncrease) {
-                        await db.updateCoinVersus(p.userProfile.id, -betIncrease);
-                        gameState.pot += betIncrease;
-                        gameState.playerContributions[p.playerId] += betIncrease;
-                    } else {
-                        gameState.log.unshift({ type: 'system', message: `${p.username} não tem CoinVersus suficientes para a aposta.` });
-                    }
-                } catch (error) {
-                    console.error(`Error handling bet for player ${p.username}:`, error);
-                }
-            }
-        }
-    }
 
     gameState.playerIdsInGame.forEach(id => {
         const player = gameState.players[id];
@@ -252,7 +186,7 @@ const startNewRound = async (room) => {
     broadcastGameState(room.id);
 };
 
-const calculateScoresAndEndRound = async (room) => {
+const calculateScoresAndEndRound = (room) => {
     const { gameState } = room;
     gameState.gamePhase = 'resolution';
     
@@ -308,14 +242,14 @@ const calculateScoresAndEndRound = async (room) => {
         if (movement !== 0) p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + movement));
     });
 
-    if (await checkGameEnd(room)) return;
+    if (checkGameEnd(room)) return;
 
     if (winners.length > 0) {
         const winnerTurnOrder = gameState.playerIdsInGame.filter(pId => winners.includes(pId));
         gameState.currentPlayer = winnerTurnOrder[0];
     }
     
-    await startNewRound(room);
+    startNewRound(room);
 };
 
 // --- FUNÇÕES HELPER DO SERVIDOR ---
@@ -334,7 +268,7 @@ function getLobbyDataForRoom(room) {
 }
 
 function getPublicRoomsList() {
-    return Object.values(rooms).filter(r => !r.gameStarted && r.isPrivate)
+    return Object.values(rooms).filter(r => !r.gameStarted)
         .map(r => ({ id: r.id, name: r.name, playerCount: r.players.length, mode: r.mode }));
 }
 
@@ -350,19 +284,6 @@ function broadcastGameState(roomId) {
         });
         io.to(client.id).emit('gameStateUpdate', personalizedState);
     });
-}
-
-function removePlayerFromQueue(socketId) {
-    const mode = playerQueueMap.get(socketId);
-    if (mode && quickPvpQueues[mode]) {
-        const index = quickPvpQueues[mode].findIndex(p => p.id === socketId);
-        if (index > -1) {
-            quickPvpQueues[mode].splice(index, 1);
-            playerQueueMap.delete(socketId);
-            return { mode, remainingPlayers: quickPvpQueues[mode] };
-        }
-    }
-    return null;
 }
 // --- FIM DAS FUNÇÕES HELPER ---
 
@@ -562,12 +483,12 @@ io.on('connection', (socket) => {
         try {
             await db.savePrivateMessage(senderId, recipientId, content);
             const recipientSocketId = onlineUsers.get(recipientId);
-            const messageData = { senderId, senderUsername, content, timestamp: new Date(), recipientId };
+            const messageData = { senderId, senderUsername, content, timestamp: new Date() };
             
             if (recipientSocketId) {
-                io.to(recipientSocketId).emit('privateMessage', messageData);
+                io.to(recipientSocketId).emit('privateMessage', { ...messageData, recipientId });
             }
-            socket.emit('privateMessage', messageData);
+            socket.emit('privateMessage', { ...messageData, recipientId });
         } catch (error) { console.error("Send Message Error:", error); }
     });
     
@@ -582,7 +503,7 @@ io.on('connection', (socket) => {
         const roomName = `Sala de ${username}`;
         rooms[roomId] = {
             id: roomId, name: roomName, hostId: socket.id, players: [],
-            gameStarted: false, mode: 'solo-4p', gameState: null, isPrivate: true
+            gameStarted: false, mode: 'solo-4p', gameState: null
         };
         console.log(`Sala criada: ${roomId} por ${username}`);
         socket.emit('roomCreated', roomId);
@@ -641,7 +562,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('startGame', async () => {
+    socket.on('startGame', () => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         if (!room || room.hostId !== socket.id || room.gameStarted) return;
@@ -654,11 +575,24 @@ io.on('connection', (socket) => {
     
         let startingPlayerId;
         let drawResults = {};
-        
-        const tempDeck = shuffle([...valueDeck]);
-        room.players.forEach(p => { drawResults[p.playerId] = tempDeck.pop(); });
-        const sortedPlayers = [...room.players].sort((a, b) => drawResults[b.playerId].value - drawResults[a.playerId].value);
-        startingPlayerId = sortedPlayers[0].playerId;
+        let tie = true;
+    
+        while (tie) {
+            const drawnCards = {};
+            const tempDeck = shuffle([...valueDeck]);
+            room.players.forEach(p => { drawnCards[p.playerId] = tempDeck.pop(); });
+            drawResults = drawnCards;
+    
+            const sortedPlayers = [...room.players].sort((a, b) => drawnCards[b.playerId].value - drawnCards[a.playerId].value);
+    
+            if (sortedPlayers.length < 2 || drawnCards[sortedPlayers[0].playerId].value > drawnCards[sortedPlayers[1].playerId].value) {
+                tie = false;
+                startingPlayerId = sortedPlayers[0].playerId;
+            } else {
+                 Object.values(drawnCards).forEach(card => valueDeck.push(card)); // Return cards to deck
+                 shuffle(valueDeck);
+            }
+        }
     
         shuffle(valueDeck);
         shuffle(effectDeck);
@@ -696,47 +630,27 @@ io.on('connection', (socket) => {
             decks: { value: valueDeck, effect: effectDeck },
             discardPiles: { value: [], effect: [] },
             boardPaths: boardPaths, 
-            gamePhase: 'initial_draw',
+            gamePhase: 'initial_draw', // Start with draw phase
             gameMode: room.mode,
             isPvp: true, currentPlayer: startingPlayerId, turn: 1,
             log: [{ type: 'system', message: `Partida PvP iniciada! Modo: ${room.mode}` }],
             consecutivePasses: 0,
-            drawResults: drawResults,
-            isBettingMatch: !!room.isPrivate,
-            pot: 0,
-            playerContributions: {}
+            drawResults: drawResults
         };
-
-        if (gameState.isBettingMatch) {
-            const initialBet = 1;
-            gameState.log.unshift({ type: 'system', message: `Aposta inicial: ${initialBet} CoinVersus por jogador.` });
-            for (const p of room.players) {
-                try {
-                    const user = await db.getUserProfile(p.userProfile.google_id);
-                    if (user.coinversus >= initialBet) {
-                        await db.updateCoinVersus(p.userProfile.id, -initialBet);
-                        gameState.pot += initialBet;
-                        gameState.playerContributions[p.playerId] = initialBet;
-                    } else {
-                        gameState.log.unshift({ type: 'system', message: `${p.username} não tem CoinVersus para a aposta inicial e foi removido.`});
-                        // Lógica para remover jogador da sala se não puder pagar a aposta inicial
-                    }
-                } catch (error) { console.error(`Erro ao processar aposta inicial para ${p.username}:`, error); }
-            }
-        }
     
         room.gameState = gameState;
         io.to(roomId).emit('gameStarted', gameState);
         
+        // After sending the initial state, transition to playing phase
         setTimeout(() => {
             if (rooms[roomId] && rooms[roomId].gameState) {
                 rooms[roomId].gameState.gamePhase = 'playing';
                 broadcastGameState(roomId);
             }
-        }, 5000);
+        }, 5000); // Delay to allow client-side draw animation
     });
 
-    socket.on('playCard', async ({ cardId, targetId, options = {} }) => {
+    socket.on('playCard', ({ cardId, targetId, options = {} }) => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
@@ -750,15 +664,28 @@ io.on('connection', (socket) => {
         room.gameState.consecutivePasses = 0;
         
         let cardDestinationPlayer = room.gameState.players[targetId];
-        if (card.name === 'Reversus Total' && options.isGlobal) {
-            cardDestinationPlayer = playerState;
+
+        // --- EMIT ANIMATION EVENT ---
+        let targetSlotLabel;
+        if (card.type === 'value') {
+            targetSlotLabel = playerState.playedCards.value.length === 0 ? 'Valor 1' : 'Valor 2';
+        } else {
+            const effectName = options.isIndividualLock ? options.effectNameToApply : card.name;
+            const isScoreEffect = ['Mais', 'Menos'].includes(effectName) || (card.name === 'Reversus' && options.effectType === 'score');
+            if (isScoreEffect) {
+                targetSlotLabel = 'Pontuação';
+            } else if (card.name === 'Reversus Total' && !options.isIndividualLock) {
+                targetSlotLabel = 'Reversus T.';
+            } else {
+                targetSlotLabel = 'Movimento';
+            }
         }
-        
         io.to(roomId).emit('cardPlayedAnimation', {
-            card, startPlayerId: player.playerId, targetPlayerId: cardDestinationPlayer.id, 
-            targetSlotLabel: 'some-label'
+            casterId: player.playerId, targetId, card, targetSlotLabel
         });
 
+
+        // --- UPDATE GAME STATE ---
         if (card.type === 'value') {
             playerState.playedCards.value.push(card);
             playerState.playedValueCardThisTurn = true;
@@ -778,7 +705,7 @@ io.on('connection', (socket) => {
         broadcastGameState(roomId);
     });
     
-    socket.on('endTurn', async () => {
+    socket.on('endTurn', () => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
@@ -788,7 +715,7 @@ io.on('connection', (socket) => {
         
         const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
         if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length) {
-            await calculateScoresAndEndRound(room);
+            calculateScoresAndEndRound(room);
         } else {
             let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
             let nextIndex = currentIndex;
@@ -817,16 +744,11 @@ io.on('connection', (socket) => {
                         io.to(friendSocketId).emit('friendStatusUpdate', { userId, isOnline: false });
                     }
                 });
-            } catch (error) { console.error("Error notifying friends on disconnect:", error); }
+            } catch (error) {
+                console.error("Error notifying friends on disconnect:", error);
+            }
         }
         
-        const queueResult = removePlayerFromQueue(socket.id);
-        if (queueResult) {
-            const { mode, remainingPlayers } = queueResult;
-            const required = mode === '1v1' ? 2 : (mode === '2v2' ? 4 : 4);
-            remainingPlayers.forEach(p => { io.to(p.id).emit('queueUpdate', { inQueue: true, mode, current: remainingPlayers.length, required }); });
-        }
-
         const roomId = socket.data.roomId;
         if (!roomId || !rooms[roomId]) return;
 
@@ -840,30 +762,11 @@ io.on('connection', (socket) => {
                 playerState.isEliminated = true;
                 room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} se desconectou e foi eliminado.`});
                 
-                if (room.gameState.isBettingMatch) {
-                    const contribution = room.gameState.playerContributions[disconnectedPlayer.playerId] || 0;
-                    if(contribution > 0) {
-                        // O jogador que desconectou perde sua aposta, que fica no pote
-                        room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} perdeu ${contribution} CoinVersus.`});
-                    }
-                }
-                
                 const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
                 if (activePlayers.length <= 1) {
                     const winnerId = activePlayers.length === 1 ? activePlayers[0] : null;
                     const winnerName = winnerId ? room.gameState.players[winnerId].name : "Ninguém";
-                    let message = `${winnerName} venceu por W.O.!`;
-
-                    if (room.gameState.isBettingMatch && winnerId) {
-                        const winnerClient = room.players.find(p => p.playerId === winnerId);
-                        if (winnerClient) {
-                            const totalWinnings = room.gameState.pot;
-                            await db.updateCoinVersus(winnerClient.userProfile.id, totalWinnings);
-                            message = `${winnerName} venceu e ganhou ${totalWinnings} CoinVersus!`;
-                        }
-                    }
-
-                    io.to(roomId).emit('gameOver', { message, winnerId });
+                    io.to(roomId).emit('gameOver', { message: `${winnerName} venceu por W.O.!`, winnerId });
                     delete rooms[roomId];
                 } else {
                    if (room.gameState.currentPlayer === disconnectedPlayer.playerId) {
@@ -889,6 +792,7 @@ io.on('connection', (socket) => {
         io.emit('roomList', getPublicRoomsList());
     };
 
+    socket.on('leaveRoom', handleDisconnect);
     socket.on('disconnect', handleDisconnect);
 });
 
