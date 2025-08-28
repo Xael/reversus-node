@@ -8,24 +8,38 @@ const db = require('./db.js');
 
 const app = express();
 
-// Aplica o middleware CORS para todas as rotas HTTP, permitindo credenciais
-app.use(cors({
-  origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host", "http://localhost:8080"],
-  credentials: true
-}));
+// --- Configuração de CORS Robusta ---
+const allowedOrigins = [
+    "https://reversus.online",
+    "https://reversus-game.dke42d.easypanel.host",
+    "http://localhost:8080"
+];
+
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Permite requisições sem 'origin' (ex: apps mobile, Postman) ou da nossa whitelist
+        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true // Essencial para o login com Google
+};
+
+// Aplica o middleware CORS para todas as rotas HTTP
+app.use(cors(corsOptions));
 
 const server = http.createServer(app);
 
 const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
+// Usa as mesmas opções de CORS para o Socket.IO
 const io = new Server(server, {
-  cors: {
-    origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host", "http://localhost:8080"],
-    methods: ["GET", "POST"],
-    credentials: true
-  }
+  cors: corsOptions
 });
+
 
 const rooms = {};
 const onlineUsers = new Map(); // Key: userId (DB id), Value: socket.id
@@ -320,7 +334,7 @@ function getLobbyDataForRoom(room) {
 }
 
 function getPublicRoomsList() {
-    return Object.values(rooms).filter(r => !r.gameStarted)
+    return Object.values(rooms).filter(r => !r.gameStarted && r.isPrivate)
         .map(r => ({ id: r.id, name: r.name, playerCount: r.players.length, mode: r.mode }));
 }
 
