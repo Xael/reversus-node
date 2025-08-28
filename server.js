@@ -3,9 +3,16 @@ const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const { OAuth2Client } = require('google-auth-library');
+const cors = require('cors'); // Importa a biblioteca CORS
 const db = require('./db.js');
 
 const app = express();
+
+// Aplica o middleware CORS para todas as rotas HTTP
+app.use(cors({
+  origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host", "http://localhost:8080"]
+}));
+
 const server = http.createServer(app);
 
 const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
@@ -148,9 +155,8 @@ const checkGameEnd = async (room) => {
     if (gameWinners.length > 0) {
         gameState.gamePhase = 'game_over';
         const winnerNames = gameWinners.map(id => gameState.players[id].name).join(' e ');
-
         let message = `${winnerNames} venceu o jogo!`;
-        // Award pot to winner(s) only if it's a betting match
+
         if (gameState.isBettingMatch && gameState.pot > 0) {
             const potPerWinner = Math.floor(gameState.pot / gameWinners.length);
             for (const winnerId of gameWinners) {
@@ -174,9 +180,8 @@ const startNewRound = async (room) => {
     gameState.turn++;
     gameState.log.unshift({ type: 'system', message: `--- Iniciando Rodada ${gameState.turn} ---`});
 
-    // Betting logic for the new round, only if it's a betting match
     if (gameState.isBettingMatch) {
-        const betIncrease = gameState.turn;
+        const betIncrease = gameState.turn; // Aposta = número da casa (rodada)
         gameState.log.unshift({ type: 'system', message: `Aposta da rodada aumentada em ${betIncrease} CoinVersus por jogador.` });
 
         for (const p of room.players) {
@@ -197,7 +202,6 @@ const startNewRound = async (room) => {
             }
         }
     }
-
 
     gameState.playerIdsInGame.forEach(id => {
         const player = gameState.players[id];
@@ -369,7 +373,6 @@ io.on('connection', (socket) => {
             userSockets.set(socket.id, userProfile.id);
             
             socket.data.userProfile = userProfile;
-            socket.data.userId = userProfile.id;
             socket.emit('loginSuccess', await db.getUserProfile(userProfile.google_id, userProfile.id));
 
             const friends = await db.getFriendsList(userProfile.id);
@@ -533,276 +536,351 @@ io.on('connection', (socket) => {
             const friends = await db.getFriendsList(socket.data.userProfile.id);
             const friendsWithStatus = friends.map(f => ({ ...f, isOnline: onlineUsers.has(f.id) }));
             socket.emit('friendsList', friendsWithStatus);
-        } catch(error) { console.error("Get Friends List Error:", error); }
+        } catch(error) { console.error("Get Friends Error:", error); }
     });
-
+    
     socket.on('sendPrivateMessage', async ({ recipientId, content }) => {
         if (!socket.data.userProfile) return;
         const senderId = socket.data.userProfile.id;
+        const senderUsername = socket.data.userProfile.username;
         try {
             await db.savePrivateMessage(senderId, recipientId, content);
             const recipientSocketId = onlineUsers.get(recipientId);
-            const messageData = {
-                senderId,
-                senderUsername: socket.data.userProfile.username,
-                recipientId,
-                content,
-                timestamp: new Date()
-            };
+            const messageData = { senderId, senderUsername, content, timestamp: new Date(), recipientId };
+            
             if (recipientSocketId) {
                 io.to(recipientSocketId).emit('privateMessage', messageData);
             }
             socket.emit('privateMessage', messageData);
-        } catch (error) { console.error('Send Private Message Error:', error); }
-    });
-
-    // --- Lógica de Salas e Jogo ---
-    socket.on('listRooms', () => {
-        socket.emit('roomList', getPublicRoomsList());
+        } catch (error) { console.error("Send Message Error:", error); }
     });
     
+    socket.on('listRooms', () => { socket.emit('roomList', getPublicRoomsList()); });
+
     socket.on('createRoom', () => {
-        if (!socket.data.userProfile) return;
+        if (!socket.data.userProfile) {
+            return socket.emit('error', 'Você precisa estar logado para criar uma sala.');
+        }
+        const username = socket.data.userProfile.username;
         const roomId = `room-${Date.now()}`;
-        const room = {
-            id: roomId,
-            name: `${socket.data.userProfile.username}'s Room`,
-            players: [],
-            hostId: socket.id,
-            mode: 'solo-4p',
-            gameStarted: false,
-            gameState: null
+        const roomName = `Sala de ${username}`;
+        rooms[roomId] = {
+            id: roomId, name: roomName, hostId: socket.id, players: [],
+            gameStarted: false, mode: 'solo-4p', gameState: null, isPrivate: true
         };
-        rooms[roomId] = room;
-        io.emit('roomList', getPublicRoomsList());
+        console.log(`Sala criada: ${roomId} por ${username}`);
         socket.emit('roomCreated', roomId);
+        io.emit('roomList', getPublicRoomsList());
     });
 
-    socket.on('joinRoom', ({ roomId }) => {
-        if (!socket.data.userProfile) return;
+    socket.on('joinRoom', async ({ roomId }) => {
+        if (!socket.data.userProfile) {
+            return socket.emit('error', 'Você precisa estar logado para entrar em uma sala.');
+        }
         const room = rooms[roomId];
         if (room && !room.gameStarted && room.players.length < 4) {
-            socket.join(roomId);
             socket.data.roomId = roomId;
+            socket.join(roomId);
+            
+            const userFullProfile = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
 
-            const playerIds = ['player-1', 'player-2', 'player-3', 'player-4'];
-            const usedPlayerIds = room.players.map(p => p.playerId);
-            const availablePlayerId = playerIds.find(id => !usedPlayerIds.includes(id));
-
-            if (availablePlayerId) {
-                const clientData = {
-                    id: socket.id,
-                    username: socket.data.userProfile.username,
-                    googleId: socket.data.userProfile.google_id,
-                    title_code: socket.data.userProfile.selected_title_code,
-                    userProfile: socket.data.userProfile,
-                    playerId: availablePlayerId
-                };
-                room.players.push(clientData);
-
-                socket.emit('joinedRoom', getLobbyDataForRoom(room));
-                io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
-                io.emit('roomList', getPublicRoomsList());
-            } else {
-                socket.emit('error', 'Não foi possível encontrar um slot de jogador disponível.');
-            }
-        } else {
-            socket.emit('error', 'A sala está cheia ou o jogo já começou.');
-        }
-    });
-
-    socket.on('leaveRoom', () => {
-        const roomId = socket.data.roomId;
-        if (!roomId || !rooms[roomId]) return;
-        
-        const room = rooms[roomId];
-        socket.leave(roomId);
-        room.players = room.players.filter(p => p.id !== socket.id);
-        socket.data.roomId = null;
-
-        if (room.players.length === 0) {
-            delete rooms[roomId];
-        } else {
-            if (socket.id === room.hostId) {
-                room.hostId = room.players[0].id;
-            }
+            const newPlayer = {
+                id: socket.id,
+                username: userFullProfile.username,
+                googleId: userFullProfile.google_id,
+                title_code: userFullProfile.selected_title_code,
+                playerId: `player-${room.players.length + 1}`,
+                userProfile: socket.data.userProfile
+            };
+            socket.data.userProfile.playerId = newPlayer.playerId;
+            
+            room.players.push(newPlayer);
             io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
+            io.emit('roomList', getPublicRoomsList());
+        } else {
+            socket.emit('error', 'A sala está cheia, já começou ou não existe.');
         }
-        
-        io.emit('roomList', getPublicRoomsList());
-        socket.emit('leftRoom');
     });
 
-    socket.on('changeMode', ({ mode }) => {
-        const room = rooms[socket.data.roomId];
+    socket.on('lobbyChatMessage', (message) => {
+        const roomId = socket.data.roomId;
+        if (roomId && rooms[roomId] && socket.data.userProfile) {
+            io.to(roomId).emit('lobbyChatMessage', { speaker: socket.data.userProfile.username, message });
+        }
+    });
+
+    socket.on('chatMessage', (message) => {
+        const roomId = socket.data.roomId;
+        if (roomId && rooms[roomId] && socket.data.userProfile) {
+            io.to(roomId).emit('chatMessage', { speaker: socket.data.userProfile.username, message });
+        }
+    });
+
+    socket.on('changeMode', (mode) => {
+        const roomId = socket.data.roomId;
+        const room = rooms[roomId];
         if (room && room.hostId === socket.id) {
             room.mode = mode;
-            io.to(room.id).emit('lobbyUpdate', getLobbyDataForRoom(room));
+            io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
         }
     });
-    
-    // Quick PVP Handlers
-    socket.on('joinQuickPvpQueue', ({ mode }) => {
-        if (!socket.data.userProfile || !quickPvpQueues[mode]) return;
-        if (playerQueueMap.has(socket.id)) return; // Already in a queue
 
-        const playerInfo = { id: socket.id, userProfile: socket.data.userProfile };
-        quickPvpQueues[mode].push(playerInfo);
-        playerQueueMap.set(socket.id, mode);
+    socket.on('startGame', async () => {
+        const roomId = socket.data.roomId;
+        const room = rooms[roomId];
+        if (!room || room.hostId !== socket.id || room.gameStarted) return;
+    
+        room.gameStarted = true;
+        io.emit('roomList', getPublicRoomsList());
+    
+        const valueDeck = createDeck(VALUE_DECK_CONFIG, 'value');
+        const effectDeck = createDeck(EFFECT_DECK_CONFIG, 'effect');
+    
+        let startingPlayerId;
+        let drawResults = {};
         
-        const required = mode === '1v1' ? 2 : 4;
-        const current = quickPvpQueues[mode].length;
+        const tempDeck = shuffle([...valueDeck]);
+        room.players.forEach(p => { drawResults[p.playerId] = tempDeck.pop(); });
+        const sortedPlayers = [...room.players].sort((a, b) => drawResults[b.playerId].value - drawResults[a.playerId].value);
+        startingPlayerId = sortedPlayers[0].playerId;
+    
+        shuffle(valueDeck);
+        shuffle(effectDeck);
+    
+        const playerIdsInGame = room.players.map(p => p.playerId);
         
-        quickPvpQueues[mode].forEach(player => {
-            io.to(player.id).emit('queueUpdate', { inQueue: true, mode, current, required });
+        const players = Object.fromEntries(
+            room.players.map((p, index) => [
+                p.playerId,
+                {
+                    id: p.playerId, name: p.username, pathId: index, position: 1,
+                    hand: [], 
+                    resto: drawResults[p.playerId],
+                    nextResto: null,
+                    effects: { score: null, movement: null },
+                    playedCards: { value: [], effect: [] },
+                    playedValueCardThisTurn: false, liveScore: 0,
+                    status: 'neutral', isEliminated: false
+                }
+            ])
+        );
+    
+        Object.values(players).forEach(player => {
+            for(let i=0; i < 3; i++) if(valueDeck.length > 0) player.hand.push(valueDeck.pop());
+            for(let i=0; i < 2; i++) if(effectDeck.length > 0) player.hand.push(effectDeck.pop());
+        });
+    
+        const boardPaths = generateBoardPaths();
+        playerIdsInGame.forEach((id, index) => { 
+            if(boardPaths[index]) boardPaths[index].playerId = id; 
+        });
+    
+        const gameState = {
+            players, playerIdsInGame,
+            decks: { value: valueDeck, effect: effectDeck },
+            discardPiles: { value: [], effect: [] },
+            boardPaths: boardPaths, 
+            gamePhase: 'initial_draw',
+            gameMode: room.mode,
+            isPvp: true, currentPlayer: startingPlayerId, turn: 1,
+            log: [{ type: 'system', message: `Partida PvP iniciada! Modo: ${room.mode}` }],
+            consecutivePasses: 0,
+            drawResults: drawResults,
+            isBettingMatch: !!room.isPrivate,
+            pot: 0,
+            playerContributions: {}
+        };
+
+        if (gameState.isBettingMatch) {
+            const initialBet = 1;
+            gameState.log.unshift({ type: 'system', message: `Aposta inicial: ${initialBet} CoinVersus por jogador.` });
+            for (const p of room.players) {
+                try {
+                    const user = await db.getUserProfile(p.userProfile.google_id);
+                    if (user.coinversus >= initialBet) {
+                        await db.updateCoinVersus(p.userProfile.id, -initialBet);
+                        gameState.pot += initialBet;
+                        gameState.playerContributions[p.playerId] = initialBet;
+                    } else {
+                        gameState.log.unshift({ type: 'system', message: `${p.username} não tem CoinVersus para a aposta inicial e foi removido.`});
+                        // Lógica para remover jogador da sala se não puder pagar a aposta inicial
+                    }
+                } catch (error) { console.error(`Erro ao processar aposta inicial para ${p.username}:`, error); }
+            }
+        }
+    
+        room.gameState = gameState;
+        io.to(roomId).emit('gameStarted', gameState);
+        
+        setTimeout(() => {
+            if (rooms[roomId] && rooms[roomId].gameState) {
+                rooms[roomId].gameState.gamePhase = 'playing';
+                broadcastGameState(roomId);
+            }
+        }, 5000);
+    });
+
+    socket.on('playCard', async ({ cardId, targetId, options = {} }) => {
+        const roomId = socket.data.roomId;
+        const room = rooms[roomId];
+        const player = room?.players.find(p => p.id === socket.id);
+        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
+
+        const playerState = room.gameState.players[player.playerId];
+        const cardIndex = playerState.hand.findIndex(c => c.id === cardId);
+        if (cardIndex === -1) return;
+
+        const [card] = playerState.hand.splice(cardIndex, 1);
+        room.gameState.consecutivePasses = 0;
+        
+        let cardDestinationPlayer = room.gameState.players[targetId];
+        if (card.name === 'Reversus Total' && options.isGlobal) {
+            cardDestinationPlayer = playerState;
+        }
+        
+        io.to(roomId).emit('cardPlayedAnimation', {
+            card, startPlayerId: player.playerId, targetPlayerId: cardDestinationPlayer.id, 
+            targetSlotLabel: 'some-label'
         });
 
-        if (current === required) {
-            const playersForMatch = quickPvpQueues[mode].splice(0, required);
-            playersForMatch.forEach(p => playerQueueMap.delete(p.id));
+        if (card.type === 'value') {
+            playerState.playedCards.value.push(card);
+            playerState.playedValueCardThisTurn = true;
+            playerState.nextResto = card;
+            room.gameState.log.unshift({ type: 'system', message: `${playerState.name} jogou a carta de valor ${card.name}.` });
+        } else {
+            if (options.isIndividualLock) card.isLocked = true;
+            if (card.name === 'Pula' && options.pulaPath !== undefined) {
+                 cardDestinationPlayer.targetPathForPula = options.pulaPath;
+            }
+            if (card.name === 'Reversus') card.reversedEffectType = options.effectType;
             
-            const roomId = `quick-pvp-${Date.now()}`;
-            const room = {
-                id: roomId,
-                name: `Quick PVP Match`,
-                players: [],
-                hostId: playersForMatch[0].id,
-                mode: mode === '1v1' ? 'solo-2p' : (mode === '2v2' ? 'duo' : 'solo-4p'),
-                gameStarted: true,
-                gameState: null
-            };
-            rooms[roomId] = room;
+            cardDestinationPlayer.playedCards.effect.push(card);
+            applyEffect(room.gameState, card, targetId, playerState.name, options.effectType, options);
+        }
+        
+        broadcastGameState(roomId);
+    });
+    
+    socket.on('endTurn', async () => {
+        const roomId = socket.data.roomId;
+        const room = rooms[roomId];
+        const player = room?.players.find(p => p.id === socket.id);
+        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
 
-            const playerIds = ['player-1', 'player-2', 'player-3', 'player-4'].slice(0, required);
+        room.gameState.consecutivePasses++;
+        
+        const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
+        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length) {
+            await calculateScoresAndEndRound(room);
+        } else {
+            let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
+            let nextIndex = currentIndex;
+            do {
+                nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
+            } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
+            room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+            room.gameState.players[room.gameState.currentPlayer].playedValueCardThisTurn = false;
             
-            playersForMatch.forEach((p, index) => {
-                const playerSocket = io.sockets.sockets.get(p.id);
-                if (playerSocket) {
-                    playerSocket.join(roomId);
-                    playerSocket.data.roomId = roomId;
-                    const clientData = {
-                        id: p.id,
-                        username: p.userProfile.username,
-                        googleId: p.userProfile.google_id,
-                        title_code: p.userProfile.selected_title_code,
-                        userProfile: p.userProfile,
-                        playerId: playerIds[index]
-                    };
-                    room.players.push(clientData);
-                    io.to(p.id).emit('queueUpdate', { inQueue: false });
-                }
-            });
-
-            const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
-            const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
-            const playerStates = {};
-            room.players.forEach(p => {
-                playerStates[p.playerId] = { id: p.playerId, name: p.username, pathId: room.players.indexOf(p), position: 1, hand: [], resto: null, nextResto: null, effects: { score: null, movement: null }, playedCards: { value: [], effect: [] }, playedValueCardThisTurn: false, liveScore: 0, status: 'neutral', isEliminated: false };
-            });
-            
-            room.gameState = { players: playerStates, playerIdsInGame: playerIds, decks: { value: valueDeck, effect: effectDeck }, discardPiles: { value: [], effect: [] }, boardPaths: generateBoardPaths(), gamePhase: 'initial_draw', isPvp: true, isBettingMatch: false, pot: 0, playerContributions: {}, gameMode: room.mode, turn: 1, currentPlayer: 'player-1', log: [{ type: 'system', message: 'Partida Rápida encontrada! Sorteando quem começa...' }] };
-            
-            const drawnCards = {};
-            for (const id of playerIds) { drawnCards[id] = dealCard(room.gameState, 'value'); }
-            const sortedPlayers = [...playerIds].sort((a, b) => (drawnCards[b]?.value || 0) - (drawnCards[a]?.value || 0));
-            room.gameState.currentPlayer = sortedPlayers[0];
-            room.gameState.drawResults = drawnCards;
-
-            playerIds.forEach(id => {
-                const player = room.gameState.players[id];
-                player.resto = drawnCards[id];
-                while (player.hand.filter(c => c.type === 'value').length < MAX_VALUE_CARDS_IN_HAND) { const c = dealCard(room.gameState, 'value'); if(c) player.hand.push(c); else break; }
-                while (player.hand.filter(c => c.type === 'effect').length < MAX_EFFECT_CARDS_IN_HAND) { const c = dealCard(room.gameState, 'effect'); if(c) player.hand.push(c); else break; }
-            });
-            room.gameState.gamePhase = 'playing';
-
-            io.to(roomId).emit('gameStarted', room.gameState);
+            broadcastGameState(roomId);
         }
     });
 
-    socket.on('leaveQuickPvpQueue', () => {
-        const queueResult = removePlayerFromQueue(socket.id);
-        if (queueResult) {
-            const { mode, remainingPlayers } = queueResult;
-            const required = mode === '1v1' ? 2 : 4;
-            remainingPlayers.forEach(player => { io.to(player.id).emit('queueUpdate', { inQueue: true, mode, current: remainingPlayers.length, required }); });
-        }
-        socket.emit('queueUpdate', { inQueue: false });
-    });
-
-    socket.on('disconnect', async () => {
+    const handleDisconnect = async () => {
         console.log(`Jogador desconectado: ${socket.id}`);
         const userId = userSockets.get(socket.id);
         if (userId) {
             onlineUsers.delete(userId);
             userSockets.delete(socket.id);
-            const friends = await db.getFriendsList(userId);
-            friends.forEach(friend => {
-                const friendSocketId = onlineUsers.get(friend.id);
-                if (friendSocketId) {
-                    io.to(friendSocketId).emit('friendStatusUpdate', { userId, isOnline: false });
-                }
-            });
+
+            try {
+                const friends = await db.getFriendsList(userId);
+                friends.forEach(friend => {
+                    const friendSocketId = onlineUsers.get(friend.id);
+                    if (friendSocketId) {
+                        io.to(friendSocketId).emit('friendStatusUpdate', { userId, isOnline: false });
+                    }
+                });
+            } catch (error) { console.error("Error notifying friends on disconnect:", error); }
         }
         
         const queueResult = removePlayerFromQueue(socket.id);
         if (queueResult) {
             const { mode, remainingPlayers } = queueResult;
-            const required = mode === '1v1' ? 2 : 4;
-            remainingPlayers.forEach(player => { io.to(player.id).emit('queueUpdate', { inQueue: true, mode, current: remainingPlayers.length, required }); });
+            const required = mode === '1v1' ? 2 : (mode === '2v2' ? 4 : 4);
+            remainingPlayers.forEach(p => { io.to(p.id).emit('queueUpdate', { inQueue: true, mode, current: remainingPlayers.length, required }); });
         }
 
         const roomId = socket.data.roomId;
-        if (roomId && rooms[roomId]) {
-            const room = rooms[roomId];
-            const disconnectedPlayer = room.players.find(p => p.id === socket.id);
-            room.players = room.players.filter(p => p.id !== socket.id);
+        if (!roomId || !rooms[roomId]) return;
 
-            if (room.players.length === 0) {
-                delete rooms[roomId];
-                io.emit('roomList', getPublicRoomsList());
-            } else {
-                if (room.gameStarted && room.gameState) {
-                    const playerState = room.gameState.players[disconnectedPlayer.playerId];
-                    if (playerState) {
-                        playerState.isEliminated = true;
-                        room.gameState.log.unshift({ type: 'system', message: `${disconnectedPlayer.username} se desconectou.` });
-                        const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
-                        if (activePlayers.length <= 1) {
-                            if (activePlayers.length === 1) {
-                                const winnerId = activePlayers[0];
-                                const winnerName = room.gameState.players[winnerId].name;
-                                let message = `${winnerName} venceu por desistência do oponente!`;
-                                if (room.gameState.isBettingMatch && room.gameState.pot > 0) {
-                                    const winnerClient = room.players.find(p => p.playerId === winnerId);
-                                    if (winnerClient) {
-                                        const totalWinnings = room.gameState.pot;
-                                        db.updateCoinVersus(winnerClient.userProfile.id, totalWinnings);
-                                        message = `${winnerName} venceu e ganhou ${totalWinnings} CoinVersus!`;
-                                    }
-                                }
-                                io.to(room.id).emit('gameOver', { message, winnerId });
-                            }
-                            delete rooms[roomId];
-                        } else {
-                           broadcastGameState(room.id);
+        const room = rooms[roomId];
+        const disconnectedPlayer = room.players.find(p => p.id === socket.id);
+        if (!disconnectedPlayer) return;
+
+        if (room.gameStarted && room.gameState) {
+            const playerState = room.gameState.players[disconnectedPlayer.playerId];
+            if (playerState && !playerState.isEliminated) {
+                playerState.isEliminated = true;
+                room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} se desconectou e foi eliminado.`});
+                
+                if (room.gameState.isBettingMatch) {
+                    const contribution = room.gameState.playerContributions[disconnectedPlayer.playerId] || 0;
+                    if(contribution > 0) {
+                        // O jogador que desconectou perde sua aposta, que fica no pote
+                        room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} perdeu ${contribution} CoinVersus.`});
+                    }
+                }
+                
+                const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
+                if (activePlayers.length <= 1) {
+                    const winnerId = activePlayers.length === 1 ? activePlayers[0] : null;
+                    const winnerName = winnerId ? room.gameState.players[winnerId].name : "Ninguém";
+                    let message = `${winnerName} venceu por W.O.!`;
+
+                    if (room.gameState.isBettingMatch && winnerId) {
+                        const winnerClient = room.players.find(p => p.playerId === winnerId);
+                        if (winnerClient) {
+                            const totalWinnings = room.gameState.pot;
+                            await db.updateCoinVersus(winnerClient.userProfile.id, totalWinnings);
+                            message = `${winnerName} venceu e ganhou ${totalWinnings} CoinVersus!`;
                         }
                     }
+
+                    io.to(roomId).emit('gameOver', { message, winnerId });
+                    delete rooms[roomId];
                 } else {
-                    if (socket.id === room.hostId) {
-                        room.hostId = room.players[0].id;
-                    }
-                    io.to(room.id).emit('lobbyUpdate', getLobbyDataForRoom(room));
-                    io.emit('roomList', getPublicRoomsList());
+                   if (room.gameState.currentPlayer === disconnectedPlayer.playerId) {
+                       let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
+                       let nextIndex = currentIndex;
+                       do {
+                           nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
+                       } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
+                       room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+                   }
+                   broadcastGameState(roomId);
                 }
             }
+        } else {
+            room.players = room.players.filter(p => p.id !== socket.id);
+            if (room.players.length === 0) {
+                delete rooms[roomId];
+            } else {
+                if (room.hostId === socket.id) room.hostId = room.players[0].id;
+                io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
+            }
         }
-    });
+        io.emit('roomList', getPublicRoomsList());
+    };
+
+    socket.on('disconnect', handleDisconnect);
 });
 
-// Chame testConnection ao iniciar o servidor
-db.testConnection();
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`--- SERVIDOR DE JOGO REVERSUS ONLINE ---`);
+    console.log(`O servidor está rodando e escutando na porta: ${PORT}`);
+    console.log(`Aguardando conexões de jogadores...`);
+    console.log('------------------------------------');
+    db.testConnection();
 });
