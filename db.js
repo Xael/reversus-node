@@ -1,3 +1,4 @@
+
 // db.js - Adaptador de Banco de Dados PostgreSQL para Reversus
 const { Pool } = require('pg');
 
@@ -80,6 +81,14 @@ async function ensureSchema() {
       );
       ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_title_code TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS highest_rank_achieved INT;
+
+      CREATE TABLE IF NOT EXISTS banned_users (
+        id SERIAL PRIMARY KEY,
+        user_id INT UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        banned_by_id INT REFERENCES users(id) ON DELETE SET NULL,
+        reason TEXT,
+        banned_at TIMESTAMPTZ DEFAULT now()
+      );
 
       CREATE TABLE IF NOT EXISTS user_match_history (
         id         SERIAL PRIMARY KEY,
@@ -172,6 +181,28 @@ async function ensureSchema() {
 }
 
 // --- API DO BANCO DE DADOS ---
+async function isUserBanned(userId) {
+    const { rows } = await pool.query('SELECT 1 FROM banned_users WHERE user_id = $1', [userId]);
+    return rows.length > 0;
+}
+
+async function banUser({ userId, adminId }) {
+    await pool.query('INSERT INTO banned_users (user_id, banned_by_id) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING', [userId, adminId]);
+}
+
+async function unbanUser(userId) {
+    await pool.query('DELETE FROM banned_users WHERE user_id = $1', [userId]);
+}
+
+async function getBannedUsers() {
+    const { rows } = await pool.query(`
+        SELECT u.id, u.username, u.avatar_url
+        FROM banned_users bu
+        JOIN users u ON bu.user_id = u.id
+        ORDER BY bu.banned_at DESC
+    `);
+    return rows;
+}
 
 async function findOrCreateUser(googlePayload) {
   const { sub: googleId, name, picture: avatarUrl, email } = googlePayload;
@@ -186,7 +217,13 @@ async function findOrCreateUser(googlePayload) {
     );
   }
   
-  return res.rows[0];
+  const user = res.rows[0];
+  const isBanned = await isUserBanned(user.id);
+  if (isBanned) {
+      throw new Error("This account is banned.");
+  }
+
+  return user;
 }
 
 async function addXp(googleId, amount) {
@@ -479,5 +516,6 @@ module.exports = {
   getUserProfile, testConnection, searchUsers, removeFriend, 
   getFriendsList, getFriendshipStatus, setSelectedTitle, 
   savePrivateMessage, getPrivateMessageHistory, updateUserRankAndTitles, grantTitleByCode,
-  sendFriendRequest, getPendingFriendRequests, respondToFriendRequest
+  sendFriendRequest, getPendingFriendRequests, respondToFriendRequest,
+  isUserBanned, banUser, unbanUser, getBannedUsers
 };

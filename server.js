@@ -1,3 +1,4 @@
+
 // server.js --- SERVIDOR DE JOGO PVP COMPLETO COM BANCO DE DADOS ---
 const express = require('express');
 const http = require('http');
@@ -10,6 +11,7 @@ const server = http.createServer(app);
 
 const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
+const ADMIN_EMAIL = 'alexblbn@gmail.com';
 
 const io = new Server(server, {
   cors: {
@@ -19,7 +21,7 @@ const io = new Server(server, {
 });
 
 const rooms = {};
-const onlineUsers = new Map(); // Key: userId (DB id), Value: socket.id
+const onlineUsers = new Map(); // Key: userId (DB id), Value: { socketId, username, avatar_url, google_id }
 const userSockets = new Map(); // Key: socket.id, Value: userId (DB id)
 
 // --- LÓGICA DE JOGO ---
@@ -32,6 +34,24 @@ const TEAM_A_IDS = ['player-1', 'player-3'];
 const TEAM_B_IDS = ['player-2', 'player-4'];
 const NUM_PATHS = 6;
 const BOARD_SIZE = 9;
+
+// --- MATCHMAKING ---
+const matchmakingQueues = {
+    '1v1': [],
+    '1v4': [],
+    '2v2': []
+};
+const matchRequirements = {
+    '1v1': 2,
+    '1v4': 4,
+    '2v2': 4
+};
+const modeToGameMode = {
+    '1v1': 'solo-2p',
+    '1v4': 'solo-4p',
+    '2v2': 'duo'
+};
+
 
 // --- FUNÇÕES DE LÓGICA DE JOGO ---
 const shuffle = (array) => {
@@ -295,10 +315,10 @@ io.on('connection', (socket) => {
         try {
             const ticket = await client.verifyIdToken({ idToken: token, audience: GOOGLE_CLIENT_ID });
             const payload = ticket.getPayload();
-            const userProfile = await db.findOrCreateUser(payload);
+            let userProfile = await db.findOrCreateUser(payload);
             
             if (onlineUsers.has(userProfile.id)) {
-                const oldSocketId = onlineUsers.get(userProfile.id);
+                const oldSocketId = onlineUsers.get(userProfile.id)?.socketId;
                 const oldSocket = io.sockets.sockets.get(oldSocketId);
                 if (oldSocket) {
                     oldSocket.emit('forceDisconnect', 'Você se conectou em um novo local. Esta sessão foi desconectada.');
@@ -306,23 +326,33 @@ io.on('connection', (socket) => {
                 }
             }
             
-            onlineUsers.set(userProfile.id, socket.id);
+            onlineUsers.set(userProfile.id, { 
+                socketId: socket.id, 
+                username: userProfile.username, 
+                avatar_url: userProfile.avatar_url,
+                google_id: userProfile.google_id
+            });
             userSockets.set(socket.id, userProfile.id);
+            
+            // Check for Admin
+            if (payload.email === ADMIN_EMAIL) {
+                userProfile.isAdmin = true;
+            }
             
             socket.data.userProfile = userProfile;
             socket.emit('loginSuccess', await db.getUserProfile(userProfile.google_id, userProfile.id));
 
             const friends = await db.getFriendsList(userProfile.id);
             friends.forEach(friend => {
-                const friendSocketId = onlineUsers.get(friend.id);
-                if (friendSocketId) {
-                    io.to(friendSocketId).emit('friendStatusUpdate', { userId: userProfile.id, isOnline: true });
+                const friendSocketData = onlineUsers.get(friend.id);
+                if (friendSocketData) {
+                    io.to(friendSocketData.socketId).emit('friendStatusUpdate', { userId: userProfile.id, isOnline: true });
                 }
             });
 
         } catch (error) {
             console.error("Login Error:", error);
-            socket.emit('loginError', 'Falha na autenticação.');
+            socket.emit('loginError', error.message || 'Falha na autenticação.');
         }
     });
     
@@ -339,6 +369,7 @@ io.on('connection', (socket) => {
         if (!socket.data.userProfile) return;
         try {
             const profileData = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
+            profileData.isAdmin = socket.data.userProfile.isAdmin || false;
             socket.emit('profileData', profileData);
         } catch (error) {
             socket.emit('error', 'Não foi possível carregar seu perfil.');
@@ -410,9 +441,9 @@ io.on('connection', (socket) => {
             const senderProfile = socket.data.userProfile;
             const request = await db.sendFriendRequest(senderProfile.id, targetUserId);
             if (request) {
-                const targetSocketId = onlineUsers.get(targetUserId);
-                if (targetSocketId) {
-                    io.to(targetSocketId).emit('newFriendRequest', {
+                const targetSocketData = onlineUsers.get(targetUserId);
+                if (targetSocketData) {
+                    io.to(targetSocketData.socketId).emit('newFriendRequest', {
                         id: request.id,
                         sender_id: senderProfile.id,
                         username: senderProfile.username,
@@ -442,9 +473,9 @@ io.on('connection', (socket) => {
             const senderId = await db.respondToFriendRequest(requestId, userId, action);
             
             if (senderId) {
-                const senderSocketId = onlineUsers.get(senderId);
-                if (senderSocketId) {
-                    io.to(senderSocketId).emit('friendRequestResponded', { username: socket.data.userProfile.username, action });
+                const senderSocketData = onlineUsers.get(senderId);
+                if (senderSocketData) {
+                    io.to(senderSocketData.socketId).emit('friendRequestResponded', { username: socket.data.userProfile.username, action });
                 }
             }
             const requests = await db.getPendingFriendRequests(userId);
@@ -459,9 +490,9 @@ io.on('connection', (socket) => {
         if (!socket.data.userProfile) return;
         try {
             await db.removeFriend(socket.data.userProfile.id, targetUserId);
-            const friendSocketId = onlineUsers.get(targetUserId);
-            if (friendSocketId) {
-                io.to(friendSocketId).emit('friendRequestResponded', { action: 'removed' });
+            const friendSocketData = onlineUsers.get(targetUserId);
+            if (friendSocketData) {
+                io.to(friendSocketData.socketId).emit('friendRequestResponded', { action: 'removed' });
             }
             socket.emit('friendRequestResponded', { action: 'removed' });
         } catch(error) { console.error("Remove Friend Error:", error); }
@@ -482,14 +513,24 @@ io.on('connection', (socket) => {
         const senderUsername = socket.data.userProfile.username;
         try {
             await db.savePrivateMessage(senderId, recipientId, content);
-            const recipientSocketId = onlineUsers.get(recipientId);
+            const recipientSocketData = onlineUsers.get(recipientId);
             const messageData = { senderId, senderUsername, content, timestamp: new Date() };
             
-            if (recipientSocketId) {
-                io.to(recipientSocketId).emit('privateMessage', { ...messageData, recipientId });
+            if (recipientSocketData) {
+                io.to(recipientSocketData.socketId).emit('privateMessage', { ...messageData, recipientId });
             }
             socket.emit('privateMessage', { ...messageData, recipientId });
         } catch (error) { console.error("Send Message Error:", error); }
+    });
+
+    socket.on('reportPlayer', ({ reportedGoogleId, message }) => {
+        if (!socket.data.userProfile) return;
+        const reporter = socket.data.userProfile;
+        console.log(`--- PLAYER REPORT ---`);
+        console.log(`Reporter: ${reporter.username} (ID: ${reporter.id}, GoogleID: ${reporter.google_id})`);
+        console.log(`Reported GoogleID: ${reportedGoogleId}`);
+        console.log(`Message: "${message}"`);
+        console.log(`---------------------`);
     });
     
     socket.on('listRooms', () => { socket.emit('roomList', getPublicRoomsList()); });
@@ -506,7 +547,7 @@ io.on('connection', (socket) => {
             gameStarted: false, mode: 'solo-4p', gameState: null
         };
         console.log(`Sala criada: ${roomId} por ${username}`);
-        socket.emit('roomCreated', roomId);
+        socket.emit('roomCreated', { roomId });
         io.emit('roomList', getPublicRoomsList());
     });
 
@@ -549,7 +590,11 @@ io.on('connection', (socket) => {
     socket.on('chatMessage', (message) => {
         const roomId = socket.data.roomId;
         if (roomId && rooms[roomId] && socket.data.userProfile) {
-            io.to(roomId).emit('chatMessage', { speaker: socket.data.userProfile.username, message });
+            io.to(roomId).emit('chatMessage', { 
+                speaker: socket.data.userProfile.username, 
+                message,
+                googleId: socket.data.userProfile.google_id
+            });
         }
     });
 
@@ -731,6 +776,18 @@ io.on('connection', (socket) => {
 
     const handleDisconnect = async () => {
         console.log(`Jogador desconectado: ${socket.id}`);
+        
+        // Remove from matchmaking queue
+        for (const mode in matchmakingQueues) {
+            const index = matchmakingQueues[mode].findIndex(p => p.id === socket.id);
+            if (index !== -1) {
+                matchmakingQueues[mode].splice(index, 1);
+                console.log(`Jogador ${socket.id} removido da fila ${mode}`);
+                broadcastQueueStatus(mode);
+                break;
+            }
+        }
+
         const userId = userSockets.get(socket.id);
         if (userId) {
             onlineUsers.delete(userId);
@@ -739,9 +796,9 @@ io.on('connection', (socket) => {
             try {
                 const friends = await db.getFriendsList(userId);
                 friends.forEach(friend => {
-                    const friendSocketId = onlineUsers.get(friend.id);
-                    if (friendSocketId) {
-                        io.to(friendSocketId).emit('friendStatusUpdate', { userId, isOnline: false });
+                    const friendSocketData = onlineUsers.get(friend.id);
+                    if (friendSocketData) {
+                        io.to(friendSocketData.socketId).emit('friendStatusUpdate', { userId, isOnline: false });
                     }
                 });
             } catch (error) {
@@ -794,7 +851,199 @@ io.on('connection', (socket) => {
 
     socket.on('leaveRoom', handleDisconnect);
     socket.on('disconnect', handleDisconnect);
+
+    // --- Matchmaking Handlers ---
+    socket.on('joinMatchmaking', ({ mode }) => {
+        if (!socket.data.userProfile) {
+            return socket.emit('error', 'Você precisa estar logado para entrar na fila.');
+        }
+        if (!matchmakingQueues[mode]) {
+            return socket.emit('error', 'Modo de jogo inválido.');
+        }
+
+        // Remove from other queues first
+        for (const m in matchmakingQueues) {
+            matchmakingQueues[m] = matchmakingQueues[m].filter(p => p.id !== socket.id);
+        }
+
+        matchmakingQueues[mode].push({ id: socket.id, userProfile: socket.data.userProfile });
+        socket.data.currentQueue = mode;
+        console.log(`Jogador ${socket.id} (${socket.data.userProfile.username}) entrou na fila ${mode}.`);
+        
+        broadcastQueueStatus(mode);
+        checkAndStartMatch(mode);
+    });
+
+    socket.on('cancelMatchmaking', () => {
+        const mode = socket.data.currentQueue;
+        if (mode && matchmakingQueues[mode]) {
+            const index = matchmakingQueues[mode].findIndex(p => p.id === socket.id);
+            if (index !== -1) {
+                matchmakingQueues[mode].splice(index, 1);
+                socket.data.currentQueue = null;
+                console.log(`Jogador ${socket.id} cancelou e saiu da fila ${mode}.`);
+                socket.emit('matchmakingCancelled');
+                broadcastQueueStatus(mode);
+            }
+        }
+    });
+
+    // --- Admin Handlers ---
+    socket.on('admin:getData', async () => {
+        if (!socket.data.userProfile?.isAdmin) return;
+        try {
+            const online = Array.from(onlineUsers.values()).map(u => ({
+                id: userSockets.get(u.socketId), // Get DB ID
+                ...u
+            }));
+            const banned = await db.getBannedUsers();
+            socket.emit('adminData', { online, banned });
+        } catch (error) {
+            console.error("Admin GetData Error:", error);
+        }
+    });
+
+    socket.on('admin:banUser', async ({ userId }) => {
+        if (!socket.data.userProfile?.isAdmin) return;
+        try {
+            await db.banUser({ userId, adminId: socket.data.userProfile.id });
+            const targetSocketData = onlineUsers.get(userId);
+            if (targetSocketData) {
+                const targetSocket = io.sockets.sockets.get(targetSocketData.socketId);
+                if (targetSocket) {
+                    targetSocket.emit('forceDisconnect', 'Você foi banido do jogo.');
+                    targetSocket.disconnect();
+                }
+            }
+            console.log(`Admin ${socket.data.userProfile.username} banned user ID ${userId}`);
+            // Refresh admin panel for the admin who performed the action
+            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
+            const banned = await db.getBannedUsers();
+            socket.emit('adminData', { online, banned });
+        } catch (error) {
+            console.error("Admin Ban Error:", error);
+        }
+    });
+
+    socket.on('admin:unbanUser', async ({ userId }) => {
+        if (!socket.data.userProfile?.isAdmin) return;
+        try {
+            await db.unbanUser(userId);
+            console.log(`Admin ${socket.data.userProfile.username} unbanned user ID ${userId}`);
+            // Refresh admin panel
+            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
+            const banned = await db.getBannedUsers();
+            socket.emit('adminData', { online, banned });
+        } catch (error) {
+            console.error("Admin Unban Error:", error);
+        }
+    });
 });
+
+// --- Matchmaking Logic ---
+function broadcastQueueStatus(mode) {
+    const queue = matchmakingQueues[mode];
+    const needed = matchRequirements[mode];
+    const current = queue.length;
+    queue.forEach(player => {
+        io.to(player.id).emit('matchmakingStatus', { mode, current, needed });
+    });
+}
+
+function checkAndStartMatch(mode) {
+    const queue = matchmakingQueues[mode];
+    const needed = matchRequirements[mode];
+
+    if (queue.length >= needed) {
+        const playersForMatch = queue.splice(0, needed);
+        console.log(`Jogadores suficientes para a partida ${mode}. Iniciando...`);
+
+        // Create a new room for the match
+        const roomId = `match-${Date.now()}`;
+        const room = {
+            id: roomId,
+            name: `Partida Rápida ${mode}`,
+            players: [],
+            gameStarted: true,
+            mode: modeToGameMode[mode],
+            gameState: null
+        };
+        rooms[roomId] = room;
+
+        playersForMatch.forEach((playerData, index) => {
+            const playerSocket = io.sockets.sockets.get(playerData.id);
+            if (playerSocket) {
+                const newPlayer = {
+                    id: playerSocket.id,
+                    username: playerData.userProfile.username,
+                    playerId: `player-${index + 1}`,
+                    userProfile: playerData.userProfile
+                };
+                room.players.push(newPlayer);
+                playerSocket.data.roomId = roomId;
+                playerSocket.data.currentQueue = null;
+                playerSocket.join(roomId);
+            }
+        });
+        
+        // --- Create Game State ---
+        const valueDeck = createDeck(VALUE_DECK_CONFIG, 'value');
+        const effectDeck = createDeck(EFFECT_DECK_CONFIG, 'effect');
+        shuffle(valueDeck);
+        shuffle(effectDeck);
+    
+        const playerIdsInGame = room.players.map(p => p.playerId);
+        
+        const players = Object.fromEntries(
+            room.players.map((p) => [
+                p.playerId,
+                {
+                    id: p.playerId, name: p.username, pathId: -1, position: 1,
+                    hand: [], resto: null, nextResto: null,
+                    effects: { score: null, movement: null },
+                    playedCards: { value: [], effect: [] },
+                    playedValueCardThisTurn: false, liveScore: 0,
+                    status: 'neutral', isEliminated: false,
+                    username: p.username // Add username for easy access
+                }
+            ])
+        );
+    
+        Object.values(players).forEach(player => {
+            // Initial deal
+            for(let i=0; i < 3; i++) if(valueDeck.length > 0) player.hand.push(valueDeck.pop());
+            for(let i=0; i < 2; i++) if(effectDeck.length > 0) player.hand.push(effectDeck.pop());
+            // Initial resto
+            if(valueDeck.length > 0) player.resto = valueDeck.pop();
+        });
+    
+        const boardPaths = generateBoardPaths();
+        playerIdsInGame.forEach((id, index) => { 
+            if(boardPaths[index]) {
+                boardPaths[index].playerId = id; 
+                players[id].pathId = index;
+            }
+        });
+    
+        const gameState = {
+            players, playerIdsInGame,
+            decks: { value: valueDeck, effect: effectDeck },
+            discardPiles: { value: [], effect: [] },
+            boardPaths: boardPaths, 
+            gamePhase: 'playing',
+            gameMode: room.mode,
+            isPvp: true,
+            currentPlayer: 'player-1', // Always start with player 1
+            turn: 1,
+            log: [{ type: 'system', message: `Partida Rápida iniciada! Modo: ${mode}` }],
+            consecutivePasses: 0,
+        };
+    
+        room.gameState = gameState;
+        console.log(`Partida ${roomId} criada e estado de jogo gerado. Notificando jogadores.`);
+        io.to(roomId).emit('matchFound', gameState);
+    }
+}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
