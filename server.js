@@ -8,9 +8,10 @@ const db = require('./db.js');
 
 const app = express();
 
-// Aplica o middleware CORS para todas as rotas HTTP
+// Aplica o middleware CORS para todas as rotas HTTP, permitindo credenciais
 app.use(cors({
-  origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host", "http://localhost:8080"]
+  origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host", "http://localhost:8080"],
+  credentials: true
 }));
 
 const server = http.createServer(app);
@@ -21,7 +22,8 @@ const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 const io = new Server(server, {
   cors: {
     origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host", "http://localhost:8080"],
-    methods: ["GET", "POST"]
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
