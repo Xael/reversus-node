@@ -536,14 +536,25 @@ io.on('connection', (socket) => {
         } catch (error) { console.error("Send Message Error:", error); }
     });
 
-    socket.on('reportPlayer', ({ reportedGoogleId, message }) => {
+    socket.on('reportPlayer', async ({ reportedGoogleId, message }) => {
         if (!socket.data.userProfile) return;
         const reporter = socket.data.userProfile;
-        console.log(`--- PLAYER REPORT ---`);
-        console.log(`Reporter: ${reporter.username} (ID: ${reporter.id}, GoogleID: ${reporter.google_id})`);
-        console.log(`Reported GoogleID: ${reportedGoogleId}`);
-        console.log(`Message: "${message}"`);
-        console.log(`---------------------`);
+        try {
+            await db.createPlayerReport(reporter.id, reportedGoogleId, message);
+            socket.emit('reportSuccess', 'Denúncia enviada com sucesso.');
+
+            // Notifica todos os administradores online sobre a nova denúncia
+            for (const [userId, userData] of onlineUsers.entries()) {
+                const userSocket = io.sockets.sockets.get(userData.socketId);
+                const userProfile = userSocket?.data?.userProfile;
+                if (userProfile?.isAdmin) {
+                    userSocket.emit('newReport');
+                }
+            }
+        } catch (error) {
+            console.error("Report Player Error:", error);
+            socket.emit('error', 'Não foi possível enviar a denúncia.');
+        }
     });
     
     socket.on('listRooms', () => { socket.emit('roomList', getPublicRoomsList()); });
@@ -713,23 +724,23 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
         if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
-
+    
         const playerState = room.gameState.players[player.playerId];
         const cardIndex = playerState.hand.findIndex(c => c.id === cardId);
         if (cardIndex === -1) return;
-
+    
         const [card] = playerState.hand.splice(cardIndex, 1);
         room.gameState.consecutivePasses = 0;
-        
+    
         let cardDestinationPlayer = room.gameState.players[targetId];
-
-        // --- EMIT ANIMATION EVENT ---
+        if (!cardDestinationPlayer) return;
+    
         let targetSlotLabel;
         if (card.type === 'value') {
             targetSlotLabel = playerState.playedCards.value.length === 0 ? 'Valor 1' : 'Valor 2';
         } else {
-            const effectName = options.isIndividualLock ? options.effectNameToApply : card.name;
-            const isScoreEffect = ['Mais', 'Menos'].includes(effectName) || (card.name === 'Reversus' && options.effectType === 'score');
+            const effectNameToApply = options.isIndividualLock ? options.effectNameToApply : card.name;
+            const isScoreEffect = ['Mais', 'Menos'].includes(effectNameToApply) || (card.name === 'Reversus' && options.effectType === 'score');
             if (isScoreEffect) {
                 targetSlotLabel = 'Pontuação';
             } else if (card.name === 'Reversus Total' && !options.isIndividualLock) {
@@ -738,22 +749,45 @@ io.on('connection', (socket) => {
                 targetSlotLabel = 'Movimento';
             }
         }
-        io.to(roomId).emit('cardPlayedAnimation', {
-            casterId: player.playerId, targetId, card, targetSlotLabel
-        });
-
-
-        // --- UPDATE GAME STATE ---
+        io.to(roomId).emit('cardPlayedAnimation', { casterId: player.playerId, targetId, card, targetSlotLabel });
+    
         if (card.type === 'value') {
             playerState.playedCards.value.push(card);
             playerState.playedValueCardThisTurn = true;
             playerState.nextResto = card;
             room.gameState.log.unshift({ type: 'system', message: `${playerState.name} jogou a carta de valor ${card.name}.` });
         } else {
-            if (options.isIndividualLock) card.isLocked = true;
-            if (card.name === 'Pula' && options.pulaPath !== undefined) {
-                 cardDestinationPlayer.targetPathForPula = options.pulaPath;
+            const effectNameToApply = options.isIndividualLock ? options.effectNameToApply : card.name;
+            const scoreEffectCategory = ['Mais', 'Menos'];
+            const moveEffectCategory = ['Sobe', 'Desce', 'Pula'];
+    
+            let isScoreEffect = scoreEffectCategory.includes(effectNameToApply) || (card.name === 'Reversus' && options.effectType === 'score');
+            let isMoveEffect = moveEffectCategory.includes(effectNameToApply) || (card.name === 'Reversus' && options.effectType === 'movement');
+    
+            const categoryToCheck = isScoreEffect ? scoreEffectCategory : (isMoveEffect ? moveEffectCategory : null);
+    
+            if (categoryToCheck) {
+                const cardToReplaceIndex = cardDestinationPlayer.playedCards.effect.findIndex(c =>
+                    categoryToCheck.includes(c.name) ||
+                    (c.isLocked && categoryToCheck.includes(c.lockedEffect)) ||
+                    (c.name === 'Reversus' && (c.reversedEffectType === (isScoreEffect ? 'score' : 'movement')))
+                );
+    
+                if (cardToReplaceIndex > -1) {
+                    const cardToReplace = cardDestinationPlayer.playedCards.effect[cardToReplaceIndex];
+                    if (cardToReplace.isLocked) {
+                        room.gameState.log.unshift({ type: 'system', message: `O efeito ${cardToReplace.lockedEffect} em ${cardDestinationPlayer.name} está travado! A carta ${card.name} não teve efeito.` });
+                        room.gameState.discardPiles.effect.push(card);
+                        return broadcastGameState(roomId);
+                    } else {
+                        const [removedCard] = cardDestinationPlayer.playedCards.effect.splice(cardToReplaceIndex, 1);
+                        room.gameState.discardPiles.effect.push(removedCard);
+                    }
+                }
             }
+    
+            if (options.isIndividualLock) card.isLocked = true;
+            if (card.name === 'Pula' && options.pulaPath !== undefined) cardDestinationPlayer.targetPathForPula = options.pulaPath;
             if (card.name === 'Reversus') card.reversedEffectType = options.effectType;
             
             cardDestinationPlayer.playedCards.effect.push(card);
@@ -910,7 +944,8 @@ io.on('connection', (socket) => {
                 ...u
             }));
             const banned = await db.getBannedUsers();
-            socket.emit('adminData', { online, banned });
+            const pendingReports = await db.getPendingReports();
+            socket.emit('adminData', { online, banned, pendingReports });
         } catch (error) {
             console.error("Admin GetData Error:", error);
         }
@@ -919,7 +954,10 @@ io.on('connection', (socket) => {
     socket.on('admin:banUser', async ({ userId }) => {
         if (!socket.data.userProfile?.isAdmin) return;
         try {
-            await db.banUser({ userId, adminId: socket.data.userProfile.id });
+            const adminId = socket.data.userProfile.id;
+            await db.banUser({ userId, adminId });
+            await db.resolveReportsForUser(userId, adminId); // Resolve automaticamente as denúncias ao banir
+
             const targetSocketData = onlineUsers.get(userId);
             if (targetSocketData) {
                 const targetSocket = io.sockets.sockets.get(targetSocketData.socketId);
@@ -929,14 +967,30 @@ io.on('connection', (socket) => {
                 }
             }
             console.log(`Admin ${socket.data.userProfile.username} banned user ID ${userId}`);
-            // Refresh admin panel for the admin who performed the action
+            
             const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
             const banned = await db.getBannedUsers();
-            socket.emit('adminData', { online, banned });
+            const pendingReports = await db.getPendingReports();
+            socket.emit('adminData', { online, banned, pendingReports });
         } catch (error) {
             console.error("Admin Ban Error:", error);
         }
     });
+    
+    socket.on('admin:resolveReport', async ({ reportId }) => {
+        if (!socket.data.userProfile?.isAdmin) return;
+        try {
+            await db.resolveReport(reportId, socket.data.userProfile.id);
+            // Re-busca e envia os dados para o admin que agiu
+            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
+            const banned = await db.getBannedUsers();
+            const pendingReports = await db.getPendingReports();
+            socket.emit('adminData', { online, banned, pendingReports });
+        } catch (error) {
+            console.error("Admin Resolve Report Error:", error);
+        }
+    });
+
 
     socket.on('admin:unbanUser', async ({ userId }) => {
         if (!socket.data.userProfile?.isAdmin) return;
@@ -971,15 +1025,10 @@ function checkAndStartMatch(mode) {
         const playersForMatch = queue.splice(0, needed);
         console.log(`Jogadores suficientes para a partida ${mode}. Iniciando...`);
 
-        // Create a new room for the match
         const roomId = `match-${Date.now()}`;
         const room = {
-            id: roomId,
-            name: `Partida Rápida ${mode}`,
-            players: [],
-            gameStarted: true,
-            mode: modeToGameMode[mode],
-            gameState: null
+            id: roomId, name: `Partida Rápida ${mode}`, players: [],
+            gameStarted: true, mode: modeToGameMode[mode], gameState: null
         };
         rooms[roomId] = room;
 
@@ -987,10 +1036,8 @@ function checkAndStartMatch(mode) {
             const playerSocket = io.sockets.sockets.get(playerData.id);
             if (playerSocket) {
                 const newPlayer = {
-                    id: playerSocket.id,
-                    username: playerData.userProfile.username,
-                    playerId: `player-${index + 1}`,
-                    userProfile: playerData.userProfile
+                    id: playerSocket.id, username: playerData.userProfile.username,
+                    playerId: `player-${index + 1}`, userProfile: playerData.userProfile
                 };
                 room.players.push(newPlayer);
                 playerSocket.data.roomId = roomId;
@@ -999,64 +1046,67 @@ function checkAndStartMatch(mode) {
             }
         });
         
-        // --- Create Game State ---
+        // --- Create Game State (com lógica de sorteio) ---
         const valueDeck = createDeck(VALUE_DECK_CONFIG, 'value');
         const effectDeck = createDeck(EFFECT_DECK_CONFIG, 'effect');
+        
+        let startingPlayerId, drawResults = {}, tie = true;
+        while(tie) {
+            const drawnCards = {};
+            const tempDeck = shuffle([...valueDeck]);
+            room.players.forEach(p => { drawnCards[p.playerId] = tempDeck.pop(); });
+            drawResults = drawnCards;
+            const sortedPlayers = [...room.players].sort((a,b) => drawnCards[b.playerId].value - drawnCards[a.playerId].value);
+            if (sortedPlayers.length < 2 || drawnCards[sortedPlayers[0].playerId].value > drawnCards[sortedPlayers[1].playerId].value) {
+                tie = false;
+                startingPlayerId = sortedPlayers[0].playerId;
+            }
+        }
+        
         shuffle(valueDeck);
         shuffle(effectDeck);
-    
-        const playerIdsInGame = room.players.map(p => p.playerId);
         
+        const playerIdsInGame = room.players.map(p => p.playerId);
         const players = Object.fromEntries(
-            room.players.map((p) => [
-                p.playerId,
-                {
-                    id: p.playerId, name: p.username, pathId: -1, position: 1,
-                    hand: [], resto: null, nextResto: null,
-                    effects: { score: null, movement: null },
-                    playedCards: { value: [], effect: [] },
-                    playedValueCardThisTurn: false, liveScore: 0,
-                    status: 'neutral', isEliminated: false,
-                    username: p.username // Add username for easy access
-                }
-            ])
+            room.players.map((p, index) => [ p.playerId, {
+                id: p.playerId, name: p.username, pathId: index, position: 1, hand: [], 
+                resto: drawResults[p.playerId], nextResto: null,
+                effects: { score: null, movement: null },
+                playedCards: { value: [], effect: [] },
+                playedValueCardThisTurn: false, liveScore: 0,
+                status: 'neutral', isEliminated: false
+            }])
         );
-    
-        Object.values(players).forEach(player => {
-            // Initial deal
-            for(let i=0; i < 3; i++) if(valueDeck.length > 0) player.hand.push(valueDeck.pop());
-            for(let i=0; i < 2; i++) if(effectDeck.length > 0) player.hand.push(effectDeck.pop());
-            // Initial resto
-            if(valueDeck.length > 0) player.resto = valueDeck.pop();
+        Object.values(players).forEach(p => {
+            for(let i=0; i<3; i++) if(valueDeck.length>0) p.hand.push(valueDeck.pop());
+            for(let i=0; i<2; i++) if(effectDeck.length>0) p.hand.push(effectDeck.pop());
         });
-    
+        
         const boardPaths = generateBoardPaths();
-        playerIdsInGame.forEach((id, index) => { 
-            if(boardPaths[index]) {
-                boardPaths[index].playerId = id; 
-                players[id].pathId = index;
-            }
-        });
-    
+        playerIdsInGame.forEach((id, index) => { if(boardPaths[index]) boardPaths[index].playerId = id; });
+        
         const gameState = {
             players, playerIdsInGame,
             decks: { value: valueDeck, effect: effectDeck },
             discardPiles: { value: [], effect: [] },
-            boardPaths: boardPaths, 
-            gamePhase: 'playing',
-            gameMode: room.mode,
-            isPvp: true,
-            currentPlayer: 'player-1', // Always start with player 1
-            turn: 1,
+            boardPaths, gamePhase: 'initial_draw', gameMode: room.mode,
+            isPvp: true, currentPlayer: startingPlayerId, turn: 1,
             log: [{ type: 'system', message: `Partida Rápida iniciada! Modo: ${mode}` }],
-            consecutivePasses: 0,
+            consecutivePasses: 0, drawResults
         };
-    
         room.gameState = gameState;
-        console.log(`Partida ${roomId} criada e estado de jogo gerado. Notificando jogadores.`);
-        io.to(roomId).emit('matchFound', gameState);
+        
+        io.to(roomId).emit('gameStarted', gameState);
+        
+        setTimeout(() => {
+            if (rooms[roomId] && rooms[roomId].gameState) {
+                rooms[roomId].gameState.gamePhase = 'playing';
+                broadcastGameState(roomId);
+            }
+        }, 5000);
     }
 }
+
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {

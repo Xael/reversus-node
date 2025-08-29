@@ -1,4 +1,3 @@
-
 // db.js - Adaptador de Banco de Dados PostgreSQL para Reversus
 const { Pool } = require('pg');
 
@@ -148,6 +147,18 @@ async function ensureSchema() {
         content      TEXT NOT NULL,
         sent_at      TIMESTAMPTZ DEFAULT now()
       );
+
+      CREATE TABLE IF NOT EXISTS player_reports (
+        id SERIAL PRIMARY KEY,
+        reporter_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        reported_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        message TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'resolved')),
+        created_at TIMESTAMPTZ DEFAULT now(),
+        resolved_by_id INT REFERENCES users(id) ON DELETE SET NULL,
+        resolved_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_player_reports_status ON player_reports (status);
       
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
     `;
@@ -560,11 +571,62 @@ async function claimDailyReward(userId) {
   }
 }
 
+async function createPlayerReport(reporterId, reportedGoogleId, message) {
+    const { rows } = await pool.query('SELECT id FROM users WHERE google_id = $1', [reportedGoogleId]);
+    if (rows.length === 0) {
+        throw new Error("Reported user not found.");
+    }
+    const reportedId = rows[0].id;
+
+    if (reporterId === reportedId) {
+        throw new Error("Cannot report yourself.");
+    }
+
+    await pool.query(
+        'INSERT INTO player_reports (reporter_id, reported_id, message) VALUES ($1, $2, $3)',
+        [reporterId, reportedId, message]
+    );
+}
+
+async function getPendingReports() {
+    const { rows } = await pool.query(`
+        SELECT 
+            pr.id,
+            pr.message,
+            pr.created_at,
+            reporter.username AS reporter_username,
+            reported.id AS reported_user_id,
+            reported.username AS reported_username,
+            reported.avatar_url AS reported_avatar_url
+        FROM player_reports pr
+        JOIN users reporter ON pr.reporter_id = reporter.id
+        JOIN users reported ON pr.reported_id = reported.id
+        WHERE pr.status = 'pending'
+        ORDER BY pr.created_at ASC
+    `);
+    return rows;
+}
+
+async function resolveReport(reportId, adminId) {
+    await pool.query(
+        "UPDATE player_reports SET status = 'resolved', resolved_by_id = $1, resolved_at = now() WHERE id = $2 AND status = 'pending'",
+        [adminId, reportId]
+    );
+}
+
+async function resolveReportsForUser(reportedUserId, adminId) {
+     await pool.query(
+        "UPDATE player_reports SET status = 'resolved', resolved_by_id = $1, resolved_at = now() WHERE reported_id = $2 AND status = 'pending'",
+        [adminId, reportedUserId]
+    );
+}
+
 module.exports = {
   ensureSchema, findOrCreateUser, addXp, addMatchToHistory, getTopPlayers,
   getUserProfile, testConnection, searchUsers, removeFriend, 
   getFriendsList, getFriendshipStatus, setSelectedTitle, 
   savePrivateMessage, getPrivateMessageHistory, updateUserRankAndTitles, grantTitleByCode,
   sendFriendRequest, getPendingFriendRequests, respondToFriendRequest,
-  isUserBanned, banUser, unbanUser, getBannedUsers, claimDailyReward
+  isUserBanned, banUser, unbanUser, getBannedUsers, claimDailyReward,
+  createPlayerReport, getPendingReports, resolveReport, resolveReportsForUser
 };
