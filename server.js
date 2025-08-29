@@ -33,6 +33,7 @@ const TEAM_A_IDS = ['player-1', 'player-3'];
 const TEAM_B_IDS = ['player-2', 'player-4'];
 const NUM_PATHS = 6;
 const BOARD_SIZE = 9;
+const TURN_DURATION_MS = 60000;
 
 // --- MATCHMAKING ---
 const matchmakingQueues = {
@@ -202,7 +203,7 @@ const startNewRound = (room) => {
     });
 
     gameState.gamePhase = 'playing';
-    broadcastGameState(room.id);
+    startTurnTimer(room);
 };
 
 const calculateScoresAndEndRound = (room) => {
@@ -270,6 +271,110 @@ const calculateScoresAndEndRound = (room) => {
     
     startNewRound(room);
 };
+
+// --- FUNÇÕES DE TIMER DE TURNO ---
+function clearTurnTimers(room) {
+    if (room.turnTimer) clearTimeout(room.turnTimer);
+    if (room.turnCountdownInterval) clearInterval(room.turnCountdownInterval);
+    room.turnTimer = null;
+    room.turnCountdownInterval = null;
+    if (room.gameState) {
+        room.gameState.remainingTurnTime = undefined;
+    }
+}
+
+function advanceToNextPlayerInRoom(room) {
+    let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
+    let nextIndex = currentIndex;
+    let attempts = 0;
+    do {
+        nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
+        if (++attempts > room.gameState.playerIdsInGame.length * 2) {
+             console.log(`Nenhum jogador ativo encontrado na sala ${room.id}. Encerrando o jogo.`);
+             io.to(room.id).emit('gameOver', { message: 'Não há jogadores ativos. A partida terminou.' });
+             clearTurnTimers(room);
+             delete rooms[room.id];
+             return;
+        }
+    } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
+    
+    room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+    room.gameState.players[room.gameState.currentPlayer].playedValueCardThisTurn = false;
+    
+    startTurnTimer(room);
+}
+
+function handleTurnTimeout(room) {
+    if (!room || !room.gameState) return;
+    const timedOutPlayerId = room.gameState.currentPlayer;
+    const timedOutPlayer = room.players.find(p => p.playerId === timedOutPlayerId);
+    if (!timedOutPlayer) return;
+
+    console.log(`Jogador ${timedOutPlayer.username} (${timedOutPlayerId}) esgotou o tempo na sala ${room.id}`);
+    clearTurnTimers(room);
+
+    room.gameState.log.unshift({type: 'system', message: `${timedOutPlayer.username} demorou demais e foi eliminado por inatividade.`});
+
+    if (room.mode === 'solo-2p') {
+        const winner = room.players.find(p => p.playerId !== timedOutPlayerId);
+        if (winner) {
+            io.to(room.id).emit('gameOver', { message: `${winner.username} venceu porque ${timedOutPlayer.username} esgotou o tempo!`, winnerId: winner.playerId });
+            delete rooms[room.id];
+        }
+    } else if (room.mode === 'duo') {
+        const timedOutPlayerTeam = TEAM_A_IDS.includes(timedOutPlayerId) ? TEAM_A_IDS : TEAM_B_IDS;
+        const winningTeamIds = timedOutPlayerTeam === TEAM_A_IDS ? TEAM_B_IDS : TEAM_A_IDS;
+        const winner = room.players.find(p => p.playerId === winningTeamIds[0]);
+        if (winner) {
+            const winnerName = `a dupla de ${winner.username}`;
+            io.to(room.id).emit('gameOver', { message: `A vitória é d${winnerName} porque um oponente esgotou o tempo!`, winnerId: winner.playerId });
+            delete rooms[room.id];
+        }
+    } else { // solo-3p, solo-4p
+        room.gameState.players[timedOutPlayerId].isEliminated = true;
+        
+        const activePlayers = room.gameState.playerIdsInGame.filter(pId => !room.gameState.players[pId].isEliminated);
+        if (activePlayers.length <= 1) {
+            const winnerId = activePlayers.length === 1 ? activePlayers[0] : null;
+            const winnerName = winnerId ? room.gameState.players[winnerId].name : "Ninguém";
+            io.to(room.id).emit('gameOver', { message: `${winnerName} venceu por W.O.!`, winnerId });
+            delete rooms[room.id];
+        } else {
+            advanceToNextPlayerInRoom(room);
+        }
+    }
+}
+
+function startTurnTimer(room) {
+    if (!room || !room.gameState) return;
+    clearTurnTimers(room);
+
+    room.gameState.remainingTurnTime = 60;
+    const currentPlayerId = room.gameState.currentPlayer;
+
+    room.turnTimer = setTimeout(() => {
+        if(rooms[room.id]) {
+            handleTurnTimeout(room);
+        }
+    }, TURN_DURATION_MS);
+
+    room.turnCountdownInterval = setInterval(() => {
+        if (!rooms[room.id] || !rooms[room.id].gameState) {
+            clearInterval(room.turnCountdownInterval);
+            return;
+        }
+        room.gameState.remainingTurnTime--;
+        if (room.gameState.remainingTurnTime <= 10) {
+            broadcastGameState(room.id);
+        }
+        if(room.gameState.remainingTurnTime <= 0) {
+             clearInterval(room.turnCountdownInterval);
+        }
+    }, 1000);
+
+    broadcastGameState(room.id);
+}
+
 
 // --- FUNÇÕES HELPER DO SERVIDOR ---
 function getLobbyDataForRoom(room) {
@@ -568,7 +673,8 @@ io.on('connection', (socket) => {
         const roomName = `Sala de ${username}`;
         rooms[roomId] = {
             id: roomId, name: roomName, hostId: socket.id, players: [],
-            gameStarted: false, mode: 'solo-4p', gameState: null
+            gameStarted: false, mode: 'solo-4p', gameState: null,
+            turnTimer: null, turnCountdownInterval: null
         };
         console.log(`Sala criada: ${roomId} por ${username}`);
         socket.emit('roomCreated', { roomId });
@@ -694,8 +800,13 @@ io.on('connection', (socket) => {
             if(boardPaths[index]) boardPaths[index].playerId = id; 
         });
     
+        const playerSocketMap = {};
+        room.players.forEach(p => {
+            playerSocketMap[p.id] = p.playerId;
+        });
+
         const gameState = {
-            players, playerIdsInGame,
+            players, playerIdsInGame, playerSocketMap,
             decks: { value: valueDeck, effect: effectDeck },
             discardPiles: { value: [], effect: [] },
             boardPaths: boardPaths, 
@@ -714,7 +825,7 @@ io.on('connection', (socket) => {
         setTimeout(() => {
             if (rooms[roomId] && rooms[roomId].gameState) {
                 rooms[roomId].gameState.gamePhase = 'playing';
-                broadcastGameState(roomId);
+                startTurnTimer(rooms[roomId]);
             }
         }, 5000); // Delay to allow client-side draw animation
     });
@@ -803,21 +914,18 @@ io.on('connection', (socket) => {
         const player = room?.players.find(p => p.id === socket.id);
         if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
 
+        clearTurnTimers(room);
         room.gameState.consecutivePasses++;
         
         const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
-        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length) {
+        if (activePlayers.length > 0 && room.gameState.consecutivePasses === activePlayers.length) {
+             room.gameState.log.unshift({ type: 'system', message: "ÚLTIMA CHAMADA! Todos os jogadores passaram. A rodada terminará se todos passarem novamente." });
+        }
+        
+        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length * 2) {
             calculateScoresAndEndRound(room);
         } else {
-            let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
-            let nextIndex = currentIndex;
-            do {
-                nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
-            } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
-            room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
-            room.gameState.players[room.gameState.currentPlayer].playedValueCardThisTurn = false;
-            
-            broadcastGameState(roomId);
+            advanceToNextPlayerInRoom(room);
         }
     });
 
@@ -860,13 +968,15 @@ io.on('connection', (socket) => {
         const disconnectedPlayer = room.players.find(p => p.id === socket.id);
         if (!disconnectedPlayer) return;
 
+        clearTurnTimers(room);
+
         if (room.gameStarted && room.gameState) {
             const playerState = room.gameState.players[disconnectedPlayer.playerId];
             if (playerState && !playerState.isEliminated) {
                 playerState.isEliminated = true;
                 room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} se desconectou e foi eliminado.`});
                 
-                const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
+                const activePlayers = room.gameState.playerIdsInGame.filter(pId => !room.gameState.players[pId].isEliminated);
                 if (activePlayers.length <= 1) {
                     const winnerId = activePlayers.length === 1 ? activePlayers[0] : null;
                     const winnerName = winnerId ? room.gameState.players[winnerId].name : "Ninguém";
@@ -874,14 +984,10 @@ io.on('connection', (socket) => {
                     delete rooms[roomId];
                 } else {
                    if (room.gameState.currentPlayer === disconnectedPlayer.playerId) {
-                       let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
-                       let nextIndex = currentIndex;
-                       do {
-                           nextIndex = (nextIndex + 1) % room.gameState.playerIdsInGame.length;
-                       } while (room.gameState.players[room.gameState.playerIdsInGame[nextIndex]].isEliminated);
-                       room.gameState.currentPlayer = room.gameState.playerIdsInGame[nextIndex];
+                       advanceToNextPlayerInRoom(room);
+                   } else {
+                       startTurnTimer(room);
                    }
-                   broadcastGameState(roomId);
                 }
             }
         } else {
@@ -1028,7 +1134,8 @@ function checkAndStartMatch(mode) {
         const roomId = `match-${Date.now()}`;
         const room = {
             id: roomId, name: `Partida Rápida ${mode}`, players: [],
-            gameStarted: true, mode: modeToGameMode[mode], gameState: null
+            gameStarted: true, mode: modeToGameMode[mode], gameState: null,
+            turnTimer: null, turnCountdownInterval: null
         };
         rooms[roomId] = room;
 
@@ -1085,8 +1192,13 @@ function checkAndStartMatch(mode) {
         const boardPaths = generateBoardPaths();
         playerIdsInGame.forEach((id, index) => { if(boardPaths[index]) boardPaths[index].playerId = id; });
         
+        const playerSocketMap = {};
+        room.players.forEach(p => {
+            playerSocketMap[p.id] = p.playerId;
+        });
+
         const gameState = {
-            players, playerIdsInGame,
+            players, playerIdsInGame, playerSocketMap,
             decks: { value: valueDeck, effect: effectDeck },
             discardPiles: { value: [], effect: [] },
             boardPaths, gamePhase: 'initial_draw', gameMode: room.mode,
@@ -1101,7 +1213,7 @@ function checkAndStartMatch(mode) {
         setTimeout(() => {
             if (rooms[roomId] && rooms[roomId].gameState) {
                 rooms[roomId].gameState.gamePhase = 'playing';
-                broadcastGameState(roomId);
+                startTurnTimer(rooms[roomId]);
             }
         }, 5000);
     }
