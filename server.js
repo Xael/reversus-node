@@ -1,4 +1,3 @@
-
 // server.js --- SERVIDOR DE JOGO PVP COMPLETO COM BANCO DE DADOS ---
 const express = require('express');
 const http = require('http');
@@ -356,6 +355,20 @@ io.on('connection', (socket) => {
         }
     });
     
+    socket.on('claimDailyLoginReward', async () => {
+        if (!socket.data.userProfile) return;
+        try {
+            const result = await db.claimDailyReward(socket.data.userProfile.id);
+            if (result.success) {
+                socket.emit('dailyRewardSuccess', { amount: result.amount });
+                const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
+                socket.emit('profileData', updatedProfile);
+            }
+        } catch (error) {
+            console.error("Daily Reward Error:", error);
+        }
+    });
+
     socket.on('getRanking', async ({ page = 1 } = {}) => {
         try {
             const rankingData = await db.getTopPlayers(page, 10);

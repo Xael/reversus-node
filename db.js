@@ -81,6 +81,8 @@ async function ensureSchema() {
       );
       ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_title_code TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS highest_rank_achieved INT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS coinversus INT DEFAULT 0;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_daily_reward_claimed_at TIMESTAMPTZ;
 
       CREATE TABLE IF NOT EXISTS banned_users (
         id SERIAL PRIMARY KEY,
@@ -324,7 +326,7 @@ async function getTopPlayers(page = 1, limit = 10) {
   const totalPages = Math.ceil(totalPlayers / limit);
 
   const playersRes = await pool.query(
-    `SELECT u.google_id, u.username, u.avatar_url, u.victories, u.selected_title_code,
+    `SELECT u.google_id, u.username, u.avatar_url, u.victories, u.coinversus, u.selected_title_code,
      RANK() OVER (ORDER BY u.victories DESC, u.id ASC) as rank
      FROM users u
      ORDER BY rank
@@ -510,6 +512,53 @@ async function getUserProfile(googleId, requesterId = null) {
   };
 }
 
+async function claimDailyReward(userId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `SELECT last_daily_reward_claimed_at FROM users WHERE id = $1 FOR UPDATE`,
+      [userId]
+    );
+
+    if (rows.length === 0) {
+      await client.query('ROLLBACK');
+      return { success: false, reason: 'User not found' };
+    }
+
+    const lastClaimed = rows[0].last_daily_reward_claimed_at;
+    const now = new Date();
+    
+    // Check if a reward has been claimed today based on UTC date
+    if (lastClaimed) {
+        const lastClaimDate = new Date(lastClaimed);
+        if (lastClaimDate.getUTCFullYear() === now.getUTCFullYear() &&
+            lastClaimDate.getUTCMonth() === now.getUTCMonth() &&
+            lastClaimDate.getUTCDate() === now.getUTCDate()) {
+            await client.query('ROLLBACK');
+            return { success: false, reason: 'Already claimed today' };
+        }
+    }
+
+    const rewardAmount = 100;
+    await client.query(
+      `UPDATE users 
+       SET coinversus = coinversus + $1, last_daily_reward_claimed_at = NOW() AT TIME ZONE 'UTC'
+       WHERE id = $2`,
+      [rewardAmount, userId]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, amount: rewardAmount };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error("Error in claimDailyReward:", error);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 module.exports = {
   ensureSchema, findOrCreateUser, addXp, addMatchToHistory, getTopPlayers,
@@ -517,5 +566,5 @@ module.exports = {
   getFriendsList, getFriendshipStatus, setSelectedTitle, 
   savePrivateMessage, getPrivateMessageHistory, updateUserRankAndTitles, grantTitleByCode,
   sendFriendRequest, getPendingFriendRequests, respondToFriendRequest,
-  isUserBanned, banUser, unbanUser, getBannedUsers
+  isUserBanned, banUser, unbanUser, getBannedUsers, claimDailyReward
 };
