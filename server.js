@@ -393,8 +393,16 @@ function getLobbyDataForRoom(room) {
 
 function getPublicRoomsList() {
     return Object.values(rooms).filter(r => !r.gameStarted)
-        .map(r => ({ id: r.id, name: r.name, playerCount: r.players.length, mode: r.mode, hasPassword: r.hasPassword }));
+        .map(r => ({
+            id: r.id,
+            name: r.name,
+            playerCount: r.players.length,
+            players: r.players.map(p => ({ username: p.username, googleId: p.googleId })),
+            mode: r.mode,
+            hasPassword: r.hasPassword
+        }));
 }
+
 
 function broadcastGameState(roomId) {
     const room = rooms[roomId];
@@ -664,22 +672,46 @@ io.on('connection', (socket) => {
     
     socket.on('listRooms', () => { socket.emit('roomList', getPublicRoomsList()); });
 
-    socket.on('createRoom', ({ name, password }) => {
+    socket.on('createRoom', async ({ name, password }) => {
         if (!socket.data.userProfile) {
             return socket.emit('error', 'Você precisa estar logado para criar uma sala.');
         }
+        if (socket.data.roomId && rooms[socket.data.roomId]) {
+            return socket.emit('error', 'Você já está em uma sala.');
+        }
+
         const username = socket.data.userProfile.username;
         const roomId = `room-${Date.now()}`;
         const roomName = name || `Sala de ${username}`;
         const hasPassword = !!password;
-        rooms[roomId] = {
+
+        const room = {
             id: roomId, name: roomName, hostId: socket.id, players: [],
             gameStarted: false, mode: 'solo-4p', gameState: null,
             turnTimer: null, turnCountdownInterval: null,
             password: password, hasPassword: hasPassword
         };
-        console.log(`Sala criada: ${roomId} por ${username}`);
-        socket.emit('roomCreated', { roomId });
+        rooms[roomId] = room;
+
+        socket.data.roomId = roomId;
+        socket.join(roomId);
+
+        const userFullProfile = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
+
+        const newPlayer = {
+            id: socket.id,
+            username: userFullProfile.username,
+            googleId: userFullProfile.google_id,
+            title_code: userFullProfile.selected_title_code,
+            playerId: 'player-1',
+            userProfile: socket.data.userProfile
+        };
+        socket.data.userProfile.playerId = newPlayer.playerId;
+        room.players.push(newPlayer);
+        
+        console.log(`Sala criada: ${roomId} por ${username}, que entrou automaticamente.`);
+        
+        io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
         io.emit('roomList', getPublicRoomsList());
     });
 
@@ -1012,7 +1044,7 @@ io.on('connection', (socket) => {
     socket.on('disconnect', handleDisconnect);
 
     // --- Matchmaking Handlers ---
-    socket.on('joinMatchmaking', ({ mode }) => {
+    socket.on('joinMatchmaking', async ({ mode }) => {
         if (!socket.data.userProfile) {
             return socket.emit('error', 'Você precisa estar logado para entrar na fila.');
         }
@@ -1030,7 +1062,7 @@ io.on('connection', (socket) => {
         console.log(`Jogador ${socket.id} (${socket.data.userProfile.username}) entrou na fila ${mode}.`);
         
         broadcastQueueStatus(mode);
-        checkAndStartMatch(mode);
+        await checkAndStartMatch(mode);
     });
 
     socket.on('cancelMatchmaking', () => {
@@ -1129,7 +1161,7 @@ function broadcastQueueStatus(mode) {
     });
 }
 
-function checkAndStartMatch(mode) {
+async function checkAndStartMatch(mode) {
     const queue = matchmakingQueues[mode];
     const needed = matchRequirements[mode];
 
@@ -1144,22 +1176,34 @@ function checkAndStartMatch(mode) {
             turnTimer: null, turnCountdownInterval: null
         };
         rooms[roomId] = room;
-
-        playersForMatch.forEach((playerData, index) => {
+        
+        const playerPromises = playersForMatch.map(async (playerData, index) => {
             const playerSocket = io.sockets.sockets.get(playerData.id);
             if (playerSocket) {
-                const newPlayer = {
-                    id: playerSocket.id, username: playerData.userProfile.username,
-                    playerId: `player-${index + 1}`, userProfile: playerData.userProfile
+                const fullProfile = await db.getUserProfile(playerData.userProfile.google_id, playerData.userProfile.id);
+                return {
+                    id: playerSocket.id,
+                    username: fullProfile.username,
+                    playerId: `player-${index + 1}`,
+                    userProfile: playerData.userProfile,
+                    fullProfile: fullProfile
                 };
-                room.players.push(newPlayer);
-                playerSocket.data.roomId = roomId;
+            }
+            return null;
+        });
+
+        const resolvedPlayers = (await Promise.all(playerPromises)).filter(p => p);
+
+        resolvedPlayers.forEach(pData => {
+            const playerSocket = io.sockets.sockets.get(pData.id);
+            if (playerSocket) {
+                room.players.push(pData);
+                playerSocket.data.roomId = room.id;
                 playerSocket.data.currentQueue = null;
-                playerSocket.join(roomId);
+                playerSocket.join(room.id);
             }
         });
-        
-        // --- Create Game State (com lógica de sorteio) ---
+
         const valueDeck = createDeck(VALUE_DECK_CONFIG, 'value');
         const effectDeck = createDeck(EFFECT_DECK_CONFIG, 'effect');
         
@@ -1182,7 +1226,7 @@ function checkAndStartMatch(mode) {
         const playerIdsInGame = room.players.map(p => p.playerId);
         const players = Object.fromEntries(
             room.players.map((p, index) => [ p.playerId, {
-                id: p.playerId, name: p.username, pathId: index, position: 1, hand: [], 
+                id: p.playerId, name: p.fullProfile.username, pathId: index, position: 1, hand: [], 
                 resto: drawResults[p.playerId], nextResto: null,
                 effects: { score: null, movement: null },
                 playedCards: { value: [], effect: [] },
