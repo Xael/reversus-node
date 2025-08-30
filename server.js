@@ -393,7 +393,7 @@ function getLobbyDataForRoom(room) {
 
 function getPublicRoomsList() {
     return Object.values(rooms).filter(r => !r.gameStarted)
-        .map(r => ({ id: r.id, name: r.name, playerCount: r.players.length, mode: r.mode }));
+        .map(r => ({ id: r.id, name: r.name, playerCount: r.players.length, mode: r.mode, hasPassword: r.hasPassword }));
 }
 
 function broadcastGameState(roomId) {
@@ -664,29 +664,35 @@ io.on('connection', (socket) => {
     
     socket.on('listRooms', () => { socket.emit('roomList', getPublicRoomsList()); });
 
-    socket.on('createRoom', () => {
+    socket.on('createRoom', ({ name, password }) => {
         if (!socket.data.userProfile) {
             return socket.emit('error', 'Você precisa estar logado para criar uma sala.');
         }
         const username = socket.data.userProfile.username;
         const roomId = `room-${Date.now()}`;
-        const roomName = `Sala de ${username}`;
+        const roomName = name || `Sala de ${username}`;
+        const hasPassword = !!password;
         rooms[roomId] = {
             id: roomId, name: roomName, hostId: socket.id, players: [],
             gameStarted: false, mode: 'solo-4p', gameState: null,
-            turnTimer: null, turnCountdownInterval: null
+            turnTimer: null, turnCountdownInterval: null,
+            password: password, hasPassword: hasPassword
         };
         console.log(`Sala criada: ${roomId} por ${username}`);
         socket.emit('roomCreated', { roomId });
         io.emit('roomList', getPublicRoomsList());
     });
 
-    socket.on('joinRoom', async ({ roomId }) => {
+    socket.on('joinRoom', async ({ roomId, password }) => {
         if (!socket.data.userProfile) {
             return socket.emit('error', 'Você precisa estar logado para entrar em uma sala.');
         }
         const room = rooms[roomId];
         if (room && !room.gameStarted && room.players.length < 4) {
+            if (room.hasPassword && room.password !== password) {
+                return socket.emit('error', 'Senha incorreta.');
+            }
+            
             socket.data.roomId = roomId;
             socket.join(roomId);
             
