@@ -26,6 +26,14 @@ const userSockets = new Map(); // Key: socket.id, Value: userId (DB id)
 // --- LÓGICA DE JOGO ---
 const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { value: 6, count: 8 }, { value: 8, count: 6 }, { value: 10, count: 4 }];
 const EFFECT_DECK_CONFIG = [{ name: 'Mais', count: 4 }, { name: 'Menos', count: 4 }, { name: 'Sobe', count: 4 }, { name: 'Desce', count: 4 }, { name: 'Pula', count: 4 }, { name: 'Reversus', count: 4 }, { name: 'Reversus Total', count: 1 }];
+const POSITIVE_EFFECTS = {
+    'Resto Maior': {}, 'Carta Menor': {}, 'Jogo Aberto': {}, 'Imunidade': {},
+    'Desafio': {}, 'Impulso': {}, 'Troca Justa': {}, 'Reversus Total': {}
+};
+const NEGATIVE_EFFECTS = {
+    'Resto Menor': {}, 'Carta Maior': {}, 'Super Exposto': {}, 'Castigo': {},
+    'Parada': {}, 'Troca Injusta': {}, 'Total Revesus Nada!': {}
+};
 const MAX_VALUE_CARDS_IN_HAND = 3;
 const MAX_EFFECT_CARDS_IN_HAND = 2;
 const WINNING_POSITION = 10;
@@ -72,17 +80,29 @@ const createDeck = (config, cardType) => {
 
 const generateBoardPaths = () => {
     const paths = [];
+    const allPositiveEffects = Object.keys(POSITIVE_EFFECTS);
+    const allNegativeEffects = Object.keys(NEGATIVE_EFFECTS);
+
     for (let i = 0; i < NUM_PATHS; i++) {
         const spaces = Array.from({ length: BOARD_SIZE }, (_, j) => ({
             id: j + 1, color: 'white', effectName: null, isUsed: false
         }));
+
         const colorableSpaceIds = Array.from({ length: 7 }, (_, j) => j + 2);
         shuffle(colorableSpaceIds);
         const spacesToColor = colorableSpaceIds.slice(0, 2);
+        
         spacesToColor.forEach(spaceId => {
             const space = spaces.find(s => s.id === spaceId);
             if (space) {
-                space.color = Math.random() > 0.5 ? 'blue' : 'red';
+                const isPositive = Math.random() > 0.5;
+                if (isPositive) {
+                    space.color = 'blue';
+                    space.effectName = allPositiveEffects[Math.floor(Math.random() * allPositiveEffects.length)];
+                } else {
+                    space.color = 'red';
+                    space.effectName = allNegativeEffects[Math.floor(Math.random() * allNegativeEffects.length)];
+                }
             }
         });
         paths.push({ id: i, spaces });
@@ -154,21 +174,102 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
      gameState.log.unshift({ type: 'system', message: `${casterName} usou ${originalCardName} em ${target.name}.` });
 };
 
-const checkGameEnd = (room) => {
+async function triggerFieldEffects_server(room) {
+    const { gameState } = room;
+    if (!gameState) return;
+    
+    gameState.activeFieldEffects = []; // Reset effects each round
+
+    for (const id of gameState.playerIdsInGame) {
+        const player = gameState.players[id];
+        if (player.isEliminated || player.pathId === -1) continue;
+
+        const path = gameState.boardPaths[player.pathId];
+        if (!path || player.position < 1 || player.position > path.spaces.length) continue;
+        
+        const space = path.spaces[player.position - 1];
+
+        if (space && space.effectName && !space.isUsed) {
+            const isPositive = space.color === 'blue';
+            gameState.log.unshift({ type: 'system', message: `${player.name} parou em uma casa ${isPositive ? 'azul' : 'vermelha'}! Ativando efeito: ${space.effectName}`});
+            
+            // For now, only handle status effects server-side for simplicity.
+            const effectName = space.effectName;
+            if (['Jogo Aberto', 'Imunidade', 'Desafio', 'Impulso', 'Super Exposto', 'Castigo', 'Parada', 'Resto Maior', 'Resto Menor'].includes(effectName)) {
+                gameState.activeFieldEffects.push({
+                    name: effectName,
+                    type: isPositive ? 'positive' : 'negative',
+                    appliesTo: player.id
+                });
+            }
+             if (effectName === 'Jogo Aberto') {
+                gameState.revealedHands = gameState.playerIdsInGame.filter(pId => pId !== player.id);
+            }
+            // Mark as used so it doesn't trigger again
+            space.isUsed = true;
+        }
+    }
+}
+
+async function processGameWin(room, winnerIds) {
+    if (!room || !winnerIds || winnerIds.length === 0) return;
+    
+    const winnerData = [];
+    const loserData = [];
+    
+    room.players.forEach(p => {
+        if (winnerIds.includes(p.playerId)) {
+            winnerData.push(p.userProfile);
+        } else {
+            loserData.push(p.userProfile);
+        }
+    });
+
+    for (const winner of winnerData) {
+        try {
+            await db.addXp(winner.google_id, 100);
+            await db.addMatchToHistory(winner.google_id, {
+                outcome: 'Vitória',
+                mode: `PVP ${room.mode}`,
+                opponents: 'Jogadores Online'
+            });
+            await db.updateUserRankAndTitles(winner.id);
+        } catch (error) {
+            console.error(`Error processing win for ${winner.username}:`, error);
+        }
+    }
+
+    for (const loser of loserData) {
+         try {
+            await db.addXp(loser.google_id, 25); // Some XP for playing
+            await db.addMatchToHistory(loser.google_id, {
+                outcome: 'Derrota',
+                mode: `PVP ${room.mode}`,
+                opponents: 'Jogadores Online'
+            });
+        } catch (error) {
+            console.error(`Error processing loss for ${loser.username}:`, error);
+        }
+    }
+}
+
+
+async function checkGameEnd(room) {
     const { gameState } = room;
     const gameWinners = gameState.playerIdsInGame.filter(id => !gameState.players[id].isEliminated && gameState.players[id].position >= WINNING_POSITION);
     
     if (gameWinners.length > 0) {
         gameState.gamePhase = 'game_over';
+        await processGameWin(room, gameWinners);
         const winnerNames = gameWinners.map(id => gameState.players[id].name).join(' e ');
         io.to(room.id).emit('gameOver', { message: `${winnerNames} venceu o jogo!`, winnerId: gameWinners[0] });
         delete rooms[room.id];
         return true;
     }
     return false;
-};
+}
 
-const startNewRound = (room) => {
+async function startNewRound(room) {
     const { gameState } = room;
     gameState.turn++;
     gameState.log.unshift({ type: 'system', message: `--- Iniciando Rodada ${gameState.turn} ---`});
@@ -188,6 +289,9 @@ const startNewRound = (room) => {
 
     gameState.reversusTotalActive = false;
     gameState.consecutivePasses = 0;
+    gameState.revealedHands = [];
+    
+    await triggerFieldEffects_server(room);
     
     gameState.playerIdsInGame.forEach(id => {
         const player = gameState.players[id];
@@ -204,9 +308,9 @@ const startNewRound = (room) => {
 
     gameState.gamePhase = 'playing';
     startTurnTimer(room);
-};
+}
 
-const calculateScoresAndEndRound = (room) => {
+async function calculateScoresAndEndRound(room) {
     const { gameState } = room;
     gameState.gamePhase = 'resolution';
     
@@ -249,6 +353,11 @@ const calculateScoresAndEndRound = (room) => {
     const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
     gameState.log.unshift({ type: 'system', message: winners.length > 0 ? `Vencedor(es) da rodada: ${winnerNames}.` : "A rodada terminou em empate." });
 
+    io.to(room.id).emit('roundSummary', { winners, finalScores });
+
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    if (!rooms[room.id]) return;
+
     gameState.playerIdsInGame.forEach(id => {
         const p = gameState.players[id];
         if (p.isEliminated) return;
@@ -262,15 +371,15 @@ const calculateScoresAndEndRound = (room) => {
         if (movement !== 0) p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + movement));
     });
 
-    if (checkGameEnd(room)) return;
+    if (await checkGameEnd(room)) return;
 
     if (winners.length > 0) {
         const winnerTurnOrder = gameState.playerIdsInGame.filter(pId => winners.includes(pId));
         gameState.currentPlayer = winnerTurnOrder[0];
     }
     
-    startNewRound(room);
-};
+    await startNewRound(room);
+}
 
 // --- FUNÇÕES DE TIMER DE TURNO ---
 function clearTurnTimers(room) {
@@ -304,7 +413,7 @@ function advanceToNextPlayerInRoom(room) {
     startTurnTimer(room);
 }
 
-function handleTurnTimeout(room) {
+async function handleTurnTimeout(room) {
     if (!room || !room.gameState) return;
     const timedOutPlayerId = room.gameState.currentPlayer;
     const timedOutPlayer = room.players.find(p => p.playerId === timedOutPlayerId);
@@ -312,36 +421,40 @@ function handleTurnTimeout(room) {
 
     console.log(`Jogador ${timedOutPlayer.username} (${timedOutPlayerId}) esgotou o tempo na sala ${room.id}`);
     clearTurnTimers(room);
+    
+    if (room.gameState.turn < 3) {
+        io.to(room.id).emit('matchCancelled', 'Partida anulada por inatividade no início.');
+        delete rooms[room.id];
+        return;
+    }
 
     room.gameState.log.unshift({type: 'system', message: `${timedOutPlayer.username} demorou demais e foi eliminado por inatividade.`});
+    room.gameState.players[timedOutPlayerId].isEliminated = true;
+    
+    const activePlayers = room.gameState.playerIdsInGame.filter(pId => !room.gameState.players[pId].isEliminated);
+    let gameEnded = false;
+    let winners = [];
 
-    if (room.mode === 'solo-2p') {
-        const winner = room.players.find(p => p.playerId !== timedOutPlayerId);
-        if (winner) {
-            io.to(room.id).emit('gameOver', { message: `${winner.username} venceu porque ${timedOutPlayer.username} esgotou o tempo!`, winnerId: winner.playerId });
-            delete rooms[room.id];
+    if (room.mode === 'duo') {
+        const disconnectedPlayerTeam = TEAM_A_IDS.includes(timedOutPlayerId) ? 'A' : 'B';
+        if (activePlayers.every(pId => (disconnectedPlayerTeam === 'A' ? TEAM_B_IDS : TEAM_A_IDS).includes(pId))) {
+             gameEnded = true;
+             winners = activePlayers;
         }
-    } else if (room.mode === 'duo') {
-        const timedOutPlayerTeam = TEAM_A_IDS.includes(timedOutPlayerId) ? TEAM_A_IDS : TEAM_B_IDS;
-        const winningTeamIds = timedOutPlayerTeam === TEAM_A_IDS ? TEAM_B_IDS : TEAM_A_IDS;
-        const winner = room.players.find(p => p.playerId === winningTeamIds[0]);
-        if (winner) {
-            const winnerName = `a dupla de ${winner.username}`;
-            io.to(room.id).emit('gameOver', { message: `A vitória é d${winnerName} porque um oponente esgotou o tempo!`, winnerId: winner.playerId });
-            delete rooms[room.id];
-        }
-    } else { // solo-3p, solo-4p
-        room.gameState.players[timedOutPlayerId].isEliminated = true;
-        
-        const activePlayers = room.gameState.playerIdsInGame.filter(pId => !room.gameState.players[pId].isEliminated);
+    } else { // solo modes
         if (activePlayers.length <= 1) {
-            const winnerId = activePlayers.length === 1 ? activePlayers[0] : null;
-            const winnerName = winnerId ? room.gameState.players[winnerId].name : "Ninguém";
-            io.to(room.id).emit('gameOver', { message: `${winnerName} venceu por W.O.!`, winnerId });
-            delete rooms[room.id];
-        } else {
-            advanceToNextPlayerInRoom(room);
+            gameEnded = true;
+            winners = activePlayers;
         }
+    }
+        
+    if (gameEnded) {
+        await processGameWin(room, winners);
+        const winnerName = winners.length > 0 ? room.gameState.players[winners[0]].name : "Ninguém";
+        io.to(room.id).emit('gameOver', { message: `${winnerName} venceu por W.O.!`, winnerId: winners[0] });
+        delete rooms[room.id];
+    } else {
+        advanceToNextPlayerInRoom(room);
     }
 }
 
@@ -524,33 +637,6 @@ io.on('connection', (socket) => {
         }
     });
     
-    socket.on('gameFinished', async ({ winnerId, roomId, mode }) => {
-        if (!socket.data.userProfile) return;
-        const room = rooms[roomId];
-        if (!room) return;
-    
-        const winnerClient = room.players.find(p => p.playerId === winnerId);
-        if (!winnerClient || !winnerClient.userProfile) return;
-    
-        try {
-            const winnerUserId = winnerClient.userProfile.id;
-            const winnerGoogleId = winnerClient.userProfile.google_id;
-    
-            await db.addXp(winnerGoogleId, 100);
-            await db.addMatchToHistory(winnerGoogleId, {
-                outcome: 'Vitória',
-                mode: `PVP ${mode}`,
-                opponents: 'Jogadores Online'
-            });
-    
-            await db.updateUserRankAndTitles(winnerUserId);
-    
-        } catch (error) {
-            console.error('Erro ao processar o fim do jogo:', error);
-            socket.emit('error', 'Ocorreu um erro ao registrar sua vitória.');
-        }
-    });
-
     socket.on('searchUsers', async ({ query }) => {
         if (!socket.data.userProfile) return;
         try {
@@ -853,17 +939,19 @@ io.on('connection', (socket) => {
             isPvp: true, currentPlayer: startingPlayerId, turn: 1,
             log: [{ type: 'system', message: `Partida PvP iniciada! Modo: ${room.mode}` }],
             consecutivePasses: 0,
-            drawResults: drawResults
+            drawResults: drawResults,
+            activeFieldEffects: [],
+            revealedHands: []
         };
     
         room.gameState = gameState;
         io.to(roomId).emit('gameStarted', gameState);
         
         // After sending the initial state, transition to playing phase
-        setTimeout(() => {
+        setTimeout(async () => {
             if (rooms[roomId] && rooms[roomId].gameState) {
                 rooms[roomId].gameState.gamePhase = 'playing';
-                startTurnTimer(rooms[roomId]);
+                await startNewRound(rooms[roomId]);
             }
         }, 5000); // Delay to allow client-side draw animation
     });
@@ -946,7 +1034,7 @@ io.on('connection', (socket) => {
         broadcastGameState(roomId);
     });
     
-    socket.on('endTurn', () => {
+    socket.on('endTurn', async () => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
@@ -960,8 +1048,8 @@ io.on('connection', (socket) => {
              room.gameState.log.unshift({ type: 'system', message: "ÚLTIMA CHAMADA! Todos os jogadores passaram. A rodada terminará se todos passarem novamente." });
         }
         
-        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length * 2) {
-            calculateScoresAndEndRound(room);
+        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length) {
+            await calculateScoresAndEndRound(room);
         } else {
             advanceToNextPlayerInRoom(room);
         }
@@ -1009,22 +1097,45 @@ io.on('connection', (socket) => {
         clearTurnTimers(room);
 
         if (room.gameStarted && room.gameState) {
+             if (room.gameState.turn < 3) {
+                io.to(roomId).emit('matchCancelled', 'Partida anulada por desistência no início.');
+                delete rooms[roomId];
+                io.emit('roomList', getPublicRoomsList());
+                return;
+            }
+
             const playerState = room.gameState.players[disconnectedPlayer.playerId];
             if (playerState && !playerState.isEliminated) {
                 playerState.isEliminated = true;
                 room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} se desconectou e foi eliminado.`});
                 
                 const activePlayers = room.gameState.playerIdsInGame.filter(pId => !room.gameState.players[pId].isEliminated);
-                if (activePlayers.length <= 1) {
-                    const winnerId = activePlayers.length === 1 ? activePlayers[0] : null;
-                    const winnerName = winnerId ? room.gameState.players[winnerId].name : "Ninguém";
-                    io.to(roomId).emit('gameOver', { message: `${winnerName} venceu por W.O.!`, winnerId });
+                let gameEnded = false;
+                let winners = [];
+
+                if (room.mode === 'duo') {
+                    const disconnectedPlayerTeam = TEAM_A_IDS.includes(disconnectedPlayer.playerId) ? 'A' : 'B';
+                    if (activePlayers.every(pId => (disconnectedPlayerTeam === 'A' ? TEAM_B_IDS : TEAM_A_IDS).includes(pId))) {
+                        gameEnded = true;
+                        winners = activePlayers;
+                    }
+                } else { // solo modes
+                    if (activePlayers.length <= 1) {
+                        gameEnded = true;
+                        winners = activePlayers;
+                    }
+                }
+                
+                if (gameEnded) {
+                    await processGameWin(room, winners);
+                    const winnerName = winners.length > 0 ? room.gameState.players[winners[0]].name : "Ninguém";
+                    io.to(roomId).emit('gameOver', { message: `${winnerName} venceu por W.O.!`, winnerId: winners[0] });
                     delete rooms[roomId];
                 } else {
                    if (room.gameState.currentPlayer === disconnectedPlayer.playerId) {
                        advanceToNextPlayerInRoom(room);
                    } else {
-                       startTurnTimer(room);
+                       broadcastGameState(room.id);
                    }
                 }
             }
@@ -1254,16 +1365,18 @@ async function checkAndStartMatch(mode) {
             boardPaths, gamePhase: 'initial_draw', gameMode: room.mode,
             isPvp: true, currentPlayer: startingPlayerId, turn: 1,
             log: [{ type: 'system', message: `Partida Rápida iniciada! Modo: ${mode}` }],
-            consecutivePasses: 0, drawResults
+            consecutivePasses: 0, drawResults,
+            activeFieldEffects: [],
+            revealedHands: []
         };
         room.gameState = gameState;
         
         io.to(roomId).emit('gameStarted', gameState);
         
-        setTimeout(() => {
+        setTimeout(async () => {
             if (rooms[roomId] && rooms[roomId].gameState) {
                 rooms[roomId].gameState.gamePhase = 'playing';
-                startTurnTimer(rooms[roomId]);
+                await startNewRound(rooms[roomId]);
             }
         }, 5000);
     }
