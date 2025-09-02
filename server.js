@@ -340,9 +340,13 @@ async function handlePotDistribution(room, winnerIds) {
     const { gameState } = room;
     const potToDistribute = gameState.pot;
 
-    if (!gameState || gameState.betAmount <= 0 || potToDistribute <= 0 || winnerIds.length === 0) {
-        gameState.pot = 0;
-        return 0; // Return amount won
+    if (!gameState || gameState.betAmount <= 0 || potToDistribute <= 0) {
+        return 0; // No betting or no pot, nothing to do.
+    }
+
+    if (winnerIds.length === 0) {
+        gameState.log.unshift({ type: 'system', message: `A rodada empatou! O prêmio de ${potToDistribute} 🪙 acumula para a próxima rodada.` });
+        return 0; // On a tie, the pot carries over.
     }
 
     const potWinningsPerPlayer = Math.floor(potToDistribute / winnerIds.length);
@@ -360,7 +364,7 @@ async function handlePotDistribution(room, winnerIds) {
         await Promise.all(playersToUpdateInDB.map(p => db.updateUserCoins(p.userId, p.amountChange)));
     }
 
-    gameState.pot = 0;
+    gameState.pot = 0; // Reset pot AFTER distribution
     return potToDistribute;
 }
 
@@ -1168,20 +1172,23 @@ io.on('connection', (socket) => {
 
         const userId = userSockets.get(socket.id);
         if (userId) {
-            onlineUsers.delete(userId);
-            userSockets.delete(socket.id);
-
-            try {
-                const friends = await db.getFriendsList(userId);
-                friends.forEach(friend => {
-                    const friendSocketData = onlineUsers.get(friend.id);
-                    if (friendSocketData) {
-                        io.to(friendSocketData.socketId).emit('friendStatusUpdate', { userId, isOnline: false });
-                    }
-                });
-            } catch (error) {
-                console.error("Error notifying friends on disconnect:", error);
+            const currentSocketData = onlineUsers.get(userId);
+            // Only process disconnect if the socket matches the current active socket for the user
+            if (currentSocketData && currentSocketData.socketId === socket.id) {
+                onlineUsers.delete(userId);
+                try {
+                    const friends = await db.getFriendsList(userId);
+                    friends.forEach(friend => {
+                        const friendSocketData = onlineUsers.get(friend.id);
+                        if (friendSocketData) {
+                            io.to(friendSocketData.socketId).emit('friendStatusUpdate', { userId, isOnline: false });
+                        }
+                    });
+                } catch (error) {
+                    console.error("Error notifying friends on disconnect:", error);
+                }
             }
+            userSockets.delete(socket.id);
         }
         
         const roomId = socket.data.roomId;
