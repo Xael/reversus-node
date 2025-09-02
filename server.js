@@ -536,7 +536,11 @@ async function handleTurnTimeout(room) {
     if (await checkGameEnd(room, 'timeout')) {
         return;
     } else {
-        advanceToNextPlayerInRoom(room);
+       if (room.gameState.currentPlayer === timedOutPlayerId) {
+           advanceToNextPlayerInRoom(room);
+       } else {
+           broadcastGameState(room.id);
+       }
     }
 }
 
@@ -642,13 +646,15 @@ io.on('connection', (socket) => {
             });
             userSockets.set(socket.id, userProfile.id);
             
+            const profileFromDb = await db.getUserProfile(userProfile.google_id, userProfile.id);
+            
             // Check for Admin
             if (payload.email === ADMIN_EMAIL) {
-                userProfile.isAdmin = true;
+                profileFromDb.isAdmin = true;
             }
             
-            socket.data.userProfile = userProfile;
-            socket.emit('loginSuccess', await db.getUserProfile(userProfile.google_id, userProfile.id));
+            socket.data.userProfile = profileFromDb;
+            socket.emit('loginSuccess', profileFromDb);
 
             const friends = await db.getFriendsList(userProfile.id);
             friends.forEach(friend => {
@@ -1260,6 +1266,100 @@ io.on('connection', (socket) => {
             }
         }
     });
+
+    // --- Invite Handlers ---
+    socket.on('getOnlineFriends', async () => {
+        if (!socket.data.userProfile) return;
+        try {
+            const friends = await db.getFriendsList(socket.data.userProfile.id);
+            const roomId = socket.data.roomId;
+            const room = rooms[roomId];
+            const playersInLobby = room ? room.players.map(p => p.userProfile.id) : [];
+
+            const onlineFriends = friends
+                .filter(f => onlineUsers.has(f.id) && !playersInLobby.includes(f.id))
+                .map(f => {
+                    const targetSocketId = onlineUsers.get(f.id)?.socketId;
+                    const targetSocket = io.sockets.sockets.get(targetSocketId);
+                    const isInGameOrQueue = targetSocket ? (!!targetSocket.data.roomId || !!targetSocket.data.currentQueue) : true;
+                    return { ...f, isInGameOrQueue };
+                })
+                .filter(f => !f.isInGameOrQueue);
+
+            socket.emit('onlineFriendsList', onlineFriends);
+        } catch(error) {
+            console.error("Get Online Friends Error:", error);
+        }
+    });
+
+    socket.on('inviteFriendToLobby', async ({ targetUserId, roomId }) => {
+        const inviterProfile = socket.data.userProfile;
+        const room = rooms[roomId];
+        if (!inviterProfile || !room) return;
+
+        const targetSocketData = onlineUsers.get(targetUserId);
+        
+        if (targetSocketData) {
+            const targetSocket = io.sockets.sockets.get(targetSocketData.socketId);
+            if (targetSocket && !targetSocket.data.roomId && !targetSocket.data.currentQueue) {
+                io.to(targetSocketData.socketId).emit('lobbyInvite', {
+                    inviterUsername: inviterProfile.username,
+                    roomName: room.name,
+                    roomId: room.id
+                });
+                socket.emit('inviteResponse', { status: 'sent', username: targetSocketData.username });
+            } else {
+                 socket.emit('inviteResponse', { status: 'in_game', username: targetSocketData.username });
+            }
+        } else {
+            const targetUser = await db.getUserProfile(null, targetUserId);
+            socket.emit('inviteResponse', { status: 'offline', username: targetUser ? targetUser.username : 'O jogador' });
+        }
+    });
+
+    socket.on('acceptInvite', async ({ roomId }) => {
+        if (!socket.data.userProfile) { return socket.emit('error', 'Você precisa estar logado para entrar em uma sala.'); }
+        const room = rooms[roomId];
+        if (room && !room.gameStarted && room.players.length < 4) {
+            if (socket.data.roomId) {
+                return socket.emit('error', 'Você já está em uma sala.');
+            }
+            
+            const userFullProfile = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
+            socket.data.userProfile = userFullProfile;
+            
+            if (room.betAmount > 0 && (userFullProfile.coinversus || 0) < room.betAmount) {
+                return socket.emit('error', 'Você não tem CoinVersus suficiente para a aposta inicial desta sala.');
+            }
+    
+            socket.data.roomId = roomId;
+            socket.join(roomId);
+            
+            const newPlayer = {
+                id: socket.id,
+                username: userFullProfile.username,
+                googleId: userFullProfile.google_id,
+                title_code: userFullProfile.selected_title_code,
+                playerId: `player-${room.players.length + 1}`,
+                userProfile: userFullProfile
+            };
+            socket.data.userProfile.playerId = newPlayer.playerId;
+            
+            room.players.push(newPlayer);
+            io.to(roomId).emit('lobbyUpdate', getLobbyDataForRoom(room));
+            io.emit('roomList', getPublicRoomsList());
+        } else {
+            socket.emit('error', 'Não foi possível entrar na sala. Pode estar cheia ou a partida já começou.');
+        }
+    });
+    
+    socket.on('declineInvite', ({ roomId }) => {
+        const room = rooms[roomId];
+        if (room && rooms[roomId].hostId) {
+            io.to(rooms[roomId].hostId).emit('inviteResponse', { status: 'declined', username: socket.data.userProfile.username });
+        }
+    });
+
 
     // --- Admin Handlers ---
     socket.on('admin:getData', async () => {
