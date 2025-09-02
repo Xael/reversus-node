@@ -76,13 +76,13 @@ async function ensureSchema() {
         xp                INT DEFAULT 0,
         level             INT DEFAULT 1,
         victories         INT DEFAULT 0,
-        defeats           INT DEFAULT 0
+        defeats           INT DEFAULT 0,
+        coinversus        INT DEFAULT 0,
+        last_daily_reward_claimed_at TIMESTAMPTZ
       );
       ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_title_code TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS highest_rank_achieved INT;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS coinversus INT DEFAULT 0;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_daily_reward_claimed_at TIMESTAMPTZ;
-
+      
       CREATE TABLE IF NOT EXISTS banned_users (
         id SERIAL PRIMARY KEY,
         user_id INT UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -224,7 +224,7 @@ async function findOrCreateUser(googlePayload) {
   
   if (res.rows.length === 0) {
     res = await pool.query(
-      `INSERT INTO users (google_id, username, avatar_url) VALUES ($1, $2, $3)
+      `INSERT INTO users (google_id, username, avatar_url, coinversus) VALUES ($1, $2, $3, 100)
        RETURNING *`,
       [googleId, name, avatarUrl]
     );
@@ -331,7 +331,6 @@ async function grantTitleByCode(userId, titleCode, client = pool) {
 }
 
 async function getTopPlayers(page = 1, limit = 10) {
-  const offset = (page - 1) * limit;
   const totalRes = await pool.query('SELECT COUNT(*) FROM users');
   const totalPlayers = parseInt(totalRes.rows[0].count, 10);
   const totalPages = Math.ceil(totalPlayers / limit);
@@ -342,7 +341,7 @@ async function getTopPlayers(page = 1, limit = 10) {
      FROM users u
      ORDER BY rank
      LIMIT $1 OFFSET $2`,
-    [limit, offset]
+    [limit, (page - 1) * limit]
   );
 
   return { players: playersRes.rows, currentPage: page, totalPages };
@@ -621,6 +620,17 @@ async function resolveReportsForUser(reportedUserId, adminId) {
     );
 }
 
+async function updateUserCoins(userId, amountChange) {
+    if (typeof amountChange !== 'number' || isNaN(amountChange)) {
+        console.error(`Invalid coin amount change for user ${userId}: ${amountChange}`);
+        return;
+    }
+    await pool.query(
+        `UPDATE users SET coinversus = coinversus + $1 WHERE id = $2`,
+        [amountChange, userId]
+    );
+}
+
 module.exports = {
   ensureSchema, findOrCreateUser, addXp, addMatchToHistory, getTopPlayers,
   getUserProfile, testConnection, searchUsers, removeFriend, 
@@ -628,5 +638,6 @@ module.exports = {
   savePrivateMessage, getPrivateMessageHistory, updateUserRankAndTitles, grantTitleByCode,
   sendFriendRequest, getPendingFriendRequests, respondToFriendRequest,
   isUserBanned, banUser, unbanUser, getBannedUsers, claimDailyReward,
-  createPlayerReport, getPendingReports, resolveReport, resolveReportsForUser
+  createPlayerReport, getPendingReports, resolveReport, resolveReportsForUser,
+  updateUserCoins
 };

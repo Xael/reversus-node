@@ -254,25 +254,125 @@ async function processGameWin(room, winnerIds) {
 }
 
 
-async function checkGameEnd(room) {
+async function checkGameEnd(room, from = 'unknown') {
     const { gameState } = room;
-    const gameWinners = gameState.playerIdsInGame.filter(id => !gameState.players[id].isEliminated && gameState.players[id].position >= WINNING_POSITION);
+
+    const activePlayers = gameState.playerIdsInGame.filter(id => !gameState.players[id].isEliminated);
+    let gameEnded = false;
+    let winners = [];
+
+    // Check for elimination victory
+    if (room.mode === 'duo') {
+        const teamA_active = activePlayers.some(pId => TEAM_A_IDS.includes(pId));
+        const teamB_active = activePlayers.some(pId => TEAM_B_IDS.includes(pId));
+        if (teamA_active && !teamB_active) {
+            gameEnded = true;
+            winners = activePlayers.filter(pId => TEAM_A_IDS.includes(pId));
+        } else if (!teamA_active && teamB_active) {
+            gameEnded = true;
+            winners = activePlayers.filter(pId => TEAM_B_IDS.includes(pId));
+        }
+    } else { // Solo modes
+        if (activePlayers.length <= 1) {
+            gameEnded = true;
+            winners = activePlayers;
+        }
+    }
     
-    if (gameWinners.length > 0) {
-        gameState.gamePhase = 'game_over';
-        await processGameWin(room, gameWinners);
-        const winnerNames = gameWinners.map(id => gameState.players[id].name).join(' e ');
-        io.to(room.id).emit('gameOver', { message: `${winnerNames} venceu o jogo!`, winnerId: gameWinners[0] });
+    if (gameEnded) {
+        await processGameWin(room, winners);
+        const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
+        io.to(room.id).emit('gameOver', { message: `${winnerNames} venceu o jogo!`, winnerId: winners.length > 0 ? winners[0] : null });
         delete rooms[room.id];
         return true;
     }
+
+    // Check for position victory
+    const positionWinners = gameState.playerIdsInGame.filter(id => !gameState.players[id].isEliminated && gameState.players[id].position >= WINNING_POSITION);
+    if (positionWinners.length > 0) {
+        await processGameWin(room, positionWinners);
+        const winnerNames = positionWinners.map(id => gameState.players[id].name).join(' e ');
+        io.to(room.id).emit('gameOver', { message: `${winnerNames} venceu o jogo!`, winnerId: positionWinners[0] });
+        delete rooms[room.id];
+        return true;
+    }
+    
     return false;
 }
+
+async function handleBettingPhase(room) {
+    const { gameState } = room;
+    if (!gameState || gameState.betAmount <= 0) return true; // Continue if no betting
+
+    const playersToUpdateInDB = [];
+    let totalPotContribution = 0;
+
+    for (const playerId of gameState.playerIdsInGame) {
+        const playerState = gameState.players[playerId];
+        if (playerState.isEliminated) continue;
+
+        const bet = playerState.position * gameState.betAmount;
+        if (playerState.coinversus < bet) {
+            playerState.isEliminated = true;
+            gameState.log.unshift({ type: 'system', message: `${playerState.name} não tem moedas suficientes para a aposta (${bet}) e foi eliminado!` });
+        } else {
+            playerState.coinversus -= bet;
+            totalPotContribution += bet;
+            const playerProfile = room.players.find(p => p.playerId === playerId).userProfile;
+            playersToUpdateInDB.push({ userId: playerProfile.id, amountChange: -bet });
+            gameState.log.unshift({ type: 'system', message: `${playerState.name} apostou ${bet} 🪙.` });
+        }
+    }
+
+    gameState.pot += totalPotContribution;
+
+    if (playersToUpdateInDB.length > 0) {
+        await Promise.all(playersToUpdateInDB.map(p => db.updateUserCoins(p.userId, p.amountChange)));
+    }
+    
+    if (await checkGameEnd(room, 'betting')) {
+        return false; 
+    }
+    return true; 
+}
+
+async function handlePotDistribution(room, winnerIds) {
+    const { gameState } = room;
+    const potToDistribute = gameState.pot;
+
+    if (!gameState || gameState.betAmount <= 0 || potToDistribute <= 0 || winnerIds.length === 0) {
+        gameState.pot = 0;
+        return 0; // Return amount won
+    }
+
+    const potWinningsPerPlayer = Math.floor(potToDistribute / winnerIds.length);
+    gameState.log.unshift({ type: 'system', message: `O prêmio de ${potToDistribute} 🪙 foi dividido entre ${winnerIds.length} vencedor(es)! Cada um recebe ${potWinningsPerPlayer} 🪙.` });
+
+    const playersToUpdateInDB = [];
+    for (const winnerId of winnerIds) {
+        const playerState = gameState.players[winnerId];
+        playerState.coinversus += potWinningsPerPlayer;
+        const playerProfile = room.players.find(p => p.playerId === winnerId).userProfile;
+        playersToUpdateInDB.push({ userId: playerProfile.id, amountChange: potWinningsPerPlayer });
+    }
+
+    if (playersToUpdateInDB.length > 0) {
+        await Promise.all(playersToUpdateInDB.map(p => db.updateUserCoins(p.userId, p.amountChange)));
+    }
+
+    gameState.pot = 0;
+    return potToDistribute;
+}
+
 
 async function startNewRound(room) {
     const { gameState } = room;
     gameState.turn++;
     gameState.log.unshift({ type: 'system', message: `--- Iniciando Rodada ${gameState.turn} ---`});
+
+    // Handle betting phase before anything else
+    const canContinue = await handleBettingPhase(room);
+    if (!canContinue) return; // Game ended due to elimination
 
     gameState.playerIdsInGame.forEach(id => {
         const player = gameState.players[id];
@@ -350,10 +450,12 @@ async function calculateScoresAndEndRound(room) {
         }
     }
     
+    const potWon = await handlePotDistribution(room, winners);
+
     const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
     gameState.log.unshift({ type: 'system', message: winners.length > 0 ? `Vencedor(es) da rodada: ${winnerNames}.` : "A rodada terminou em empate." });
 
-    io.to(room.id).emit('roundSummary', { winners, finalScores });
+    io.to(room.id).emit('roundSummary', { winners, finalScores, potWon });
 
     await new Promise(resolve => setTimeout(resolve, 5000));
     if (!rooms[room.id]) return;
@@ -371,7 +473,7 @@ async function calculateScoresAndEndRound(room) {
         if (movement !== 0) p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + movement));
     });
 
-    if (await checkGameEnd(room)) return;
+    if (await checkGameEnd(room, 'score')) return;
 
     if (winners.length > 0) {
         const winnerTurnOrder = gameState.playerIdsInGame.filter(pId => winners.includes(pId));
@@ -431,28 +533,8 @@ async function handleTurnTimeout(room) {
     room.gameState.log.unshift({type: 'system', message: `${timedOutPlayer.username} demorou demais e foi eliminado por inatividade.`});
     room.gameState.players[timedOutPlayerId].isEliminated = true;
     
-    const activePlayers = room.gameState.playerIdsInGame.filter(pId => !room.gameState.players[pId].isEliminated);
-    let gameEnded = false;
-    let winners = [];
-
-    if (room.mode === 'duo') {
-        const disconnectedPlayerTeam = TEAM_A_IDS.includes(timedOutPlayerId) ? 'A' : 'B';
-        if (activePlayers.every(pId => (disconnectedPlayerTeam === 'A' ? TEAM_B_IDS : TEAM_A_IDS).includes(pId))) {
-             gameEnded = true;
-             winners = activePlayers;
-        }
-    } else { // solo modes
-        if (activePlayers.length <= 1) {
-            gameEnded = true;
-            winners = activePlayers;
-        }
-    }
-        
-    if (gameEnded) {
-        await processGameWin(room, winners);
-        const winnerName = winners.length > 0 ? room.gameState.players[winners[0]].name : "Ninguém";
-        io.to(room.id).emit('gameOver', { message: `${winnerName} venceu por W.O.!`, winnerId: winners[0] });
-        delete rooms[room.id];
+    if (await checkGameEnd(room, 'timeout')) {
+        return;
     } else {
         advanceToNextPlayerInRoom(room);
     }
@@ -512,7 +594,8 @@ function getPublicRoomsList() {
             playerCount: r.players.length,
             players: r.players.map(p => ({ username: p.username, googleId: p.googleId })),
             mode: r.mode,
-            hasPassword: r.hasPassword
+            hasPassword: r.hasPassword,
+            betAmount: r.betAmount || 0,
         }));
 }
 
@@ -758,7 +841,7 @@ io.on('connection', (socket) => {
     
     socket.on('listRooms', () => { socket.emit('roomList', getPublicRoomsList()); });
 
-    socket.on('createRoom', async ({ name, password }) => {
+    socket.on('createRoom', async ({ name, password, betAmount }) => {
         if (!socket.data.userProfile) {
             return socket.emit('error', 'Você precisa estar logado para criar uma sala.');
         }
@@ -775,7 +858,8 @@ io.on('connection', (socket) => {
             id: roomId, name: roomName, hostId: socket.id, players: [],
             gameStarted: false, mode: 'solo-4p', gameState: null,
             turnTimer: null, turnCountdownInterval: null,
-            password: password, hasPassword: hasPassword
+            password: password, hasPassword: hasPassword,
+            betAmount: parseInt(betAmount || 0, 10),
         };
         rooms[roomId] = room;
 
@@ -790,7 +874,7 @@ io.on('connection', (socket) => {
             googleId: userFullProfile.google_id,
             title_code: userFullProfile.selected_title_code,
             playerId: 'player-1',
-            userProfile: socket.data.userProfile
+            userProfile: userFullProfile
         };
         socket.data.userProfile.playerId = newPlayer.playerId;
         room.players.push(newPlayer);
@@ -811,18 +895,23 @@ io.on('connection', (socket) => {
                 return socket.emit('error', 'Senha incorreta.');
             }
             
+            const userFullProfile = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
+            socket.data.userProfile = userFullProfile;
+            const userCoins = userFullProfile.coinversus || 0;
+            if (room.betAmount > 0 && userCoins < room.betAmount) {
+                return socket.emit('error', 'Você não tem CoinVersus suficiente para a aposta inicial desta sala.');
+            }
+
             socket.data.roomId = roomId;
             socket.join(roomId);
             
-            const userFullProfile = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
-
             const newPlayer = {
                 id: socket.id,
                 username: userFullProfile.username,
                 googleId: userFullProfile.google_id,
                 title_code: userFullProfile.selected_title_code,
                 playerId: `player-${room.players.length + 1}`,
-                userProfile: socket.data.userProfile
+                userProfile: userFullProfile
             };
             socket.data.userProfile.playerId = newPlayer.playerId;
             
@@ -909,7 +998,8 @@ io.on('connection', (socket) => {
                     effects: { score: null, movement: null },
                     playedCards: { value: [], effect: [] },
                     playedValueCardThisTurn: false, liveScore: 0,
-                    status: 'neutral', isEliminated: false
+                    status: 'neutral', isEliminated: false,
+                    coinversus: p.userProfile.coinversus,
                 }
             ])
         );
@@ -941,19 +1031,20 @@ io.on('connection', (socket) => {
             consecutivePasses: 0,
             drawResults: drawResults,
             activeFieldEffects: [],
-            revealedHands: []
+            revealedHands: [],
+            betAmount: room.betAmount,
+            pot: 0,
         };
     
         room.gameState = gameState;
         io.to(roomId).emit('gameStarted', gameState);
         
-        // After sending the initial state, transition to playing phase
         setTimeout(async () => {
             if (rooms[roomId] && rooms[roomId].gameState) {
                 rooms[roomId].gameState.gamePhase = 'playing';
                 await startNewRound(rooms[roomId]);
             }
-        }, 5000); // Delay to allow client-side draw animation
+        }, 5000); 
     });
 
     socket.on('playCard', ({ cardId, targetId, options = {} }) => {
@@ -1048,7 +1139,7 @@ io.on('connection', (socket) => {
              room.gameState.log.unshift({ type: 'system', message: "ÚLTIMA CHAMADA! Todos os jogadores passaram. A rodada terminará se todos passarem novamente." });
         }
         
-        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length) {
+        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length * 2) {
             await calculateScoresAndEndRound(room);
         } else {
             advanceToNextPlayerInRoom(room);
@@ -1109,28 +1200,8 @@ io.on('connection', (socket) => {
                 playerState.isEliminated = true;
                 room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} se desconectou e foi eliminado.`});
                 
-                const activePlayers = room.gameState.playerIdsInGame.filter(pId => !room.gameState.players[pId].isEliminated);
-                let gameEnded = false;
-                let winners = [];
-
-                if (room.mode === 'duo') {
-                    const disconnectedPlayerTeam = TEAM_A_IDS.includes(disconnectedPlayer.playerId) ? 'A' : 'B';
-                    if (activePlayers.every(pId => (disconnectedPlayerTeam === 'A' ? TEAM_B_IDS : TEAM_A_IDS).includes(pId))) {
-                        gameEnded = true;
-                        winners = activePlayers;
-                    }
-                } else { // solo modes
-                    if (activePlayers.length <= 1) {
-                        gameEnded = true;
-                        winners = activePlayers;
-                    }
-                }
-                
-                if (gameEnded) {
-                    await processGameWin(room, winners);
-                    const winnerName = winners.length > 0 ? room.gameState.players[winners[0]].name : "Ninguém";
-                    io.to(roomId).emit('gameOver', { message: `${winnerName} venceu por W.O.!`, winnerId: winners[0] });
-                    delete rooms[roomId];
+                if (await checkGameEnd(room, 'disconnect')) {
+                    return;
                 } else {
                    if (room.gameState.currentPlayer === disconnectedPlayer.playerId) {
                        advanceToNextPlayerInRoom(room);
@@ -1284,7 +1355,8 @@ async function checkAndStartMatch(mode) {
         const room = {
             id: roomId, name: `Partida Rápida ${mode}`, players: [],
             gameStarted: true, mode: modeToGameMode[mode], gameState: null,
-            turnTimer: null, turnCountdownInterval: null
+            turnTimer: null, turnCountdownInterval: null,
+            betAmount: 0,
         };
         rooms[roomId] = room;
         
@@ -1296,8 +1368,7 @@ async function checkAndStartMatch(mode) {
                     id: playerSocket.id,
                     username: fullProfile.username,
                     playerId: `player-${index + 1}`,
-                    userProfile: playerData.userProfile,
-                    fullProfile: fullProfile
+                    userProfile: fullProfile
                 };
             }
             return null;
@@ -1337,12 +1408,13 @@ async function checkAndStartMatch(mode) {
         const playerIdsInGame = room.players.map(p => p.playerId);
         const players = Object.fromEntries(
             room.players.map((p, index) => [ p.playerId, {
-                id: p.playerId, name: p.fullProfile.username, pathId: index, position: 1, hand: [], 
+                id: p.playerId, name: p.username, pathId: index, position: 1, hand: [], 
                 resto: drawResults[p.playerId], nextResto: null,
                 effects: { score: null, movement: null },
                 playedCards: { value: [], effect: [] },
                 playedValueCardThisTurn: false, liveScore: 0,
-                status: 'neutral', isEliminated: false
+                status: 'neutral', isEliminated: false,
+                coinversus: p.userProfile.coinversus,
             }])
         );
         Object.values(players).forEach(p => {
@@ -1367,7 +1439,9 @@ async function checkAndStartMatch(mode) {
             log: [{ type: 'system', message: `Partida Rápida iniciada! Modo: ${mode}` }],
             consecutivePasses: 0, drawResults,
             activeFieldEffects: [],
-            revealedHands: []
+            revealedHands: [],
+            betAmount: 0,
+            pot: 0,
         };
         room.gameState = gameState;
         
