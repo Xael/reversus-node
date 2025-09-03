@@ -711,6 +711,27 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('claimChallengeReward', async ({ challengeId, amount }) => {
+        if (!socket.data.userProfile || !challengeId || !amount || typeof amount !== 'number' || amount <= 0) {
+            return;
+        }
+        try {
+            const userId = socket.data.userProfile.id;
+            const hasClaimed = await db.hasClaimedChallengeReward(userId, challengeId);
+
+            if (!hasClaimed) {
+                await db.claimChallengeReward(userId, challengeId);
+                await db.updateUserCoins(userId, amount);
+                socket.emit('challengeRewardSuccess', { amount });
+                const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, userId);
+                socket.emit('profileData', updatedProfile);
+            }
+        } catch (error) {
+            console.error("Challenge Reward Error:", error);
+            socket.emit('error', 'Falha ao resgatar a recompensa do desafio.');
+        }
+    });
+
     socket.on('getRanking', async ({ page = 1 } = {}) => {
         try {
             const rankingData = await db.getTopPlayers(page, 10);

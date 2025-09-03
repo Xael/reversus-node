@@ -160,6 +160,13 @@ async function ensureSchema() {
       );
       CREATE INDEX IF NOT EXISTS idx_player_reports_status ON player_reports (status);
       
+      CREATE TABLE IF NOT EXISTS user_challenge_rewards (
+        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        challenge_id TEXT NOT NULL,
+        claimed_at TIMESTAMPTZ DEFAULT now(),
+        PRIMARY KEY (user_id, challenge_id)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
     `;
     await client.query(sql);
@@ -631,6 +638,16 @@ async function updateUserCoins(userId, amountChange) {
     );
 }
 
+async function hasClaimedChallengeReward(userId, challengeId) {
+    const { rows } = await pool.query('SELECT 1 FROM user_challenge_rewards WHERE user_id = $1 AND challenge_id = $2', [userId, challengeId]);
+    return rows.length > 0;
+}
+
+async function claimChallengeReward(userId, challengeId) {
+    await pool.query('INSERT INTO user_challenge_rewards (user_id, challenge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [userId, challengeId]);
+}
+
+
 module.exports = {
   ensureSchema, findOrCreateUser, addXp, addMatchToHistory, getTopPlayers,
   getUserProfile, testConnection, searchUsers, removeFriend, 
@@ -639,5 +656,5 @@ module.exports = {
   sendFriendRequest, getPendingFriendRequests, respondToFriendRequest,
   isUserBanned, banUser, unbanUser, getBannedUsers, claimDailyReward,
   createPlayerReport, getPendingReports, resolveReport, resolveReportsForUser,
-  updateUserCoins
+  updateUserCoins, hasClaimedChallengeReward, claimChallengeReward
 };
