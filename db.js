@@ -55,6 +55,17 @@ const TITLES = {
     'event_dec': { name: 'Luz do Fim de Ano', line: 'Evento' },
 };
 
+const AVATAR_CATALOG = {
+    'default_1': { name: 'Avatar 1', image_url: 'aleatorio1.png', cost: 1000, unlock: null },
+    'default_2': { name: 'Avatar 2', image_url: 'aleatorio2.png', cost: 1000, unlock: null },
+    'default_3': { name: 'Avatar 3', image_url: 'aleatorio3.png', cost: 1000, unlock: null },
+    'default_4': { name: 'Avatar 4', image_url: 'aleatorio4.png', cost: 1000, unlock: null },
+    'necroverso': { name: 'Necroverso', image_url: 'necroverso.png', cost: 15000, unlock: 'tutorial_win' },
+    'contravox': { name: 'Contravox', image_url: 'contravox.png', cost: 20000, unlock: 'contravox_win' },
+    'versatrix': { name: 'Versatrix', image_url: 'versatrix.png', cost: 25000, unlock: 'versatrix_win' },
+    'reversum': { name: 'Rei Reversum', image_url: 'reversum.png', cost: 30000, unlock: 'reversum_win' }
+};
+
 // --- HELPERS ---
 function levelFromXp(xp) {
   if (!xp || xp < 100) return 1;
@@ -167,6 +178,28 @@ async function ensureSchema() {
         PRIMARY KEY (user_id, challenge_id)
       );
 
+      CREATE TABLE IF NOT EXISTS user_achievements (
+        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        achievement_code TEXT NOT NULL,
+        earned_at TIMESTAMPTZ DEFAULT now(),
+        PRIMARY KEY (user_id, achievement_code)
+      );
+
+      CREATE TABLE IF NOT EXISTS avatars (
+        code TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        image_url TEXT NOT NULL,
+        cost INT NOT NULL,
+        unlock_achievement_code TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS user_avatars (
+        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        avatar_code TEXT NOT NULL REFERENCES avatars(code) ON DELETE CASCADE,
+        purchased_at TIMESTAMPTZ DEFAULT now(),
+        PRIMARY KEY (user_id, avatar_code)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
     `;
     await client.query(sql);
@@ -176,6 +209,14 @@ async function ensureSchema() {
         await client.query(
             `INSERT INTO titles (code, name, line) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING`,
             [code, data.name, data.line]
+        );
+    }
+
+    // Semeia a tabela de avatares
+    for (const [code, data] of Object.entries(AVATAR_CATALOG)) {
+        await client.query(
+            `INSERT INTO avatars (code, name, image_url, cost, unlock_achievement_code) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (code) DO NOTHING`,
+            [code, data.name, data.image_url, data.cost, data.unlock]
         );
     }
     
@@ -521,11 +562,17 @@ async function getUserProfile(googleId, requesterId = null) {
       friendshipStatus = await getFriendshipStatus(requesterId, user.id);
   }
 
+  const ownedAvatarsRes = await pool.query(
+    `SELECT avatar_code FROM user_avatars WHERE user_id = $1`,
+    [user.id]
+  );
+
   return {
     ...user,
     titles: titlesRes.rows,
     history: historyRes.rows,
-    friendshipStatus
+    friendshipStatus,
+    owned_avatars: ownedAvatarsRes.rows.map(r => r.avatar_code)
   };
 }
 
@@ -587,23 +634,19 @@ async function createPlayerReport(reporterId, reportedGoogleId, message) {
     if (reporterId === reportedId) {
         throw new Error("Cannot report yourself.");
     }
-
     await pool.query(
-        'INSERT INTO player_reports (reporter_id, reported_id, message) VALUES ($1, $2, $3)',
+        `INSERT INTO player_reports (reporter_id, reported_id, message) VALUES ($1, $2, $3)`,
         [reporterId, reportedId, message]
     );
 }
 
 async function getPendingReports() {
     const { rows } = await pool.query(`
-        SELECT 
-            pr.id,
-            pr.message,
-            pr.created_at,
-            reporter.username AS reporter_username,
-            reported.id AS reported_user_id,
-            reported.username AS reported_username,
-            reported.avatar_url AS reported_avatar_url
+        SELECT pr.id, pr.message, pr.created_at,
+               reporter.username as reporter_username,
+               reported.id as reported_user_id,
+               reported.username as reported_username,
+               reported.avatar_url as reported_avatar_url
         FROM player_reports pr
         JOIN users reporter ON pr.reporter_id = reporter.id
         JOIN users reported ON pr.reported_id = reported.id
@@ -615,46 +658,101 @@ async function getPendingReports() {
 
 async function resolveReport(reportId, adminId) {
     await pool.query(
-        "UPDATE player_reports SET status = 'resolved', resolved_by_id = $1, resolved_at = now() WHERE id = $2 AND status = 'pending'",
+        `UPDATE player_reports SET status = 'resolved', resolved_by_id = $1, resolved_at = now() WHERE id = $2`,
         [adminId, reportId]
     );
 }
 
-async function resolveReportsForUser(reportedUserId, adminId) {
-     await pool.query(
-        "UPDATE player_reports SET status = 'resolved', resolved_by_id = $1, resolved_at = now() WHERE reported_id = $2 AND status = 'pending'",
-        [adminId, reportedUserId]
+async function resolveReportsForUser(userId, adminId) {
+    await pool.query(
+        `UPDATE player_reports SET status = 'resolved', resolved_by_id = $1, resolved_at = now() WHERE reported_id = $2 AND status = 'pending'`,
+        [adminId, userId]
+    );
+}
+
+async function hasClaimedChallengeReward(userId, challengeId) {
+    const { rows } = await pool.query(
+        `SELECT 1 FROM user_challenge_rewards WHERE user_id = $1 AND challenge_id = $2`,
+        [userId, challengeId]
+    );
+    return rows.length > 0;
+}
+
+async function claimChallengeReward(userId, challengeId) {
+    await pool.query(
+        `INSERT INTO user_challenge_rewards (user_id, challenge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [userId, challengeId]
     );
 }
 
 async function updateUserCoins(userId, amountChange) {
-    if (typeof amountChange !== 'number' || isNaN(amountChange)) {
-        console.error(`Invalid coin amount change for user ${userId}: ${amountChange}`);
-        return;
-    }
     await pool.query(
         `UPDATE users SET coinversus = coinversus + $1 WHERE id = $2`,
         [amountChange, userId]
     );
 }
 
-async function hasClaimedChallengeReward(userId, challengeId) {
-    const { rows } = await pool.query('SELECT 1 FROM user_challenge_rewards WHERE user_id = $1 AND challenge_id = $2', [userId, challengeId]);
+async function grantUserAchievement(userId, achievementCode) {
+    if (!userId || !achievementCode) return;
+    try {
+        await pool.query(
+            `INSERT INTO user_achievements (user_id, achievement_code) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [userId, achievementCode]
+        );
+    } catch (error) {
+        console.error(`Error granting achievement ${achievementCode} to user ${userId}:`, error);
+    }
+}
+
+async function checkUserAchievement(userId, achievementCode, client = pool) {
+    const { rows } = await client.query(
+        `SELECT 1 FROM user_achievements WHERE user_id = $1 AND achievement_code = $2`,
+        [userId, achievementCode]
+    );
     return rows.length > 0;
 }
 
-async function claimChallengeReward(userId, challengeId) {
-    await pool.query('INSERT INTO user_challenge_rewards (user_id, challenge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [userId, challengeId]);
+async function purchaseAvatar(userId, avatarCode) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const avatarRes = await client.query('SELECT cost, unlock_achievement_code FROM avatars WHERE code = $1', [avatarCode]);
+        if (avatarRes.rows.length === 0) throw new Error("Avatar não encontrado.");
+        const { cost, unlock_achievement_code } = avatarRes.rows[0];
+
+        const userRes = await client.query('SELECT coinversus FROM users WHERE id = $1 FOR UPDATE', [userId]);
+        const userCoins = userRes.rows[0].coinversus;
+
+        const ownedRes = await client.query('SELECT 1 FROM user_avatars WHERE user_id = $1 AND avatar_code = $2', [userId, avatarCode]);
+        if (ownedRes.rows.length > 0) throw new Error("Você já possui este avatar.");
+
+        if (userCoins < cost) throw new Error("CoinVersus insuficientes.");
+
+        if (unlock_achievement_code) {
+            const hasAchievement = await checkUserAchievement(userId, unlock_achievement_code, client);
+            if (!hasAchievement) throw new Error("Você precisa desbloquear a conquista correspondente primeiro.");
+        }
+
+        await client.query('UPDATE users SET coinversus = coinversus - $1 WHERE id = $2', [cost, userId]);
+        await client.query('INSERT INTO user_avatars (user_id, avatar_code) VALUES ($1, $2)', [userId, avatarCode]);
+
+        await client.query('COMMIT');
+        return { success: true };
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error(`Error purchasing avatar ${avatarCode} for user ${userId}:`, error);
+        return { success: false, error: error.message };
+    } finally {
+        client.release();
+    }
 }
 
-
 module.exports = {
-  ensureSchema, findOrCreateUser, addXp, addMatchToHistory, getTopPlayers,
-  getUserProfile, testConnection, searchUsers, removeFriend, 
-  getFriendsList, getFriendshipStatus, setSelectedTitle, 
-  savePrivateMessage, getPrivateMessageHistory, updateUserRankAndTitles, grantTitleByCode,
-  sendFriendRequest, getPendingFriendRequests, respondToFriendRequest,
-  isUserBanned, banUser, unbanUser, getBannedUsers, claimDailyReward,
-  createPlayerReport, getPendingReports, resolveReport, resolveReportsForUser,
-  updateUserCoins, hasClaimedChallengeReward, claimChallengeReward
+  testConnection, ensureSchema, findOrCreateUser, addXp, addMatchToHistory, updateUserRankAndTitles,
+  getTopPlayers, searchUsers, getFriendshipStatus, sendFriendRequest, getPendingFriendRequests,
+  respondToFriendRequest, removeFriend, getFriendsList, setSelectedTitle, savePrivateMessage,
+  getPrivateMessageHistory, getUserProfile, claimDailyReward, createPlayerReport, getPendingReports,
+  resolveReport, banUser, unbanUser, getBannedUsers, isUserBanned, resolveReportsForUser,
+  hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
+  checkUserAchievement
 };

@@ -732,6 +732,37 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('grantAchievement', async ({ achievementId }) => {
+        if (!socket.data.userProfile || !achievementId) return;
+        try {
+            await db.grantUserAchievement(socket.data.userProfile.id, achievementId);
+        } catch (error) {
+            console.error(`Failed to save achievement ${achievementId} for user ${socket.data.userProfile.id}:`, error);
+        }
+    });
+
+    socket.on('buyAvatar', async ({ avatarCode }) => {
+        if (!socket.data.userProfile) {
+            return socket.emit('avatarPurchaseError', { message: 'Usuário não autenticado.' });
+        }
+
+        try {
+            const userId = socket.data.userProfile.id;
+            const result = await db.purchaseAvatar(userId, avatarCode);
+
+            if (result.success) {
+                const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, userId);
+                socket.data.userProfile = updatedProfile;
+                socket.emit('avatarPurchaseSuccess', { updatedProfile });
+            } else {
+                socket.emit('avatarPurchaseError', { message: result.error });
+            }
+        } catch (error) {
+            console.error("Buy Avatar server error:", error);
+            socket.emit('avatarPurchaseError', { message: 'Ocorreu um erro no servidor.' });
+        }
+    });
+
     socket.on('getRanking', async ({ page = 1 } = {}) => {
         try {
             const rankingData = await db.getTopPlayers(page, 10);
