@@ -213,6 +213,29 @@ async function triggerFieldEffects_server(room) {
 
 async function processGameWin(room, winnerIds) {
     if (!room || !winnerIds || winnerIds.length === 0) return;
+
+    // --- Pot Distribution on Game Win ---
+    const { gameState } = room;
+    const potToDistribute = gameState.pot;
+
+    if (gameState.betAmount > 0 && potToDistribute > 0) {
+        const potWinningsPerPlayer = Math.floor(potToDistribute / winnerIds.length);
+        gameState.log.unshift({ type: 'system', message: `O prêmio de ${potToDistribute} 🪙 foi concedido a ${winnerIds.map(id => gameState.players[id].name).join(', ')} por vitória na partida.` });
+
+        const playersToUpdateInDB = [];
+        for (const winnerId of winnerIds) {
+            const playerState = gameState.players[winnerId];
+            playerState.coinversus += potWinningsPerPlayer;
+            const playerProfile = room.players.find(p => p.playerId === winnerId).userProfile;
+            playersToUpdateInDB.push({ userId: playerProfile.id, amountChange: potWinningsPerPlayer });
+        }
+
+        if (playersToUpdateInDB.length > 0) {
+            await Promise.all(playersToUpdateInDB.map(p => db.updateUserCoins(p.userId, p.amountChange)));
+        }
+        gameState.pot = 0; // Pot is awarded
+    }
+    // --- End Pot Distribution ---
     
     const winnerData = [];
     const loserData = [];
