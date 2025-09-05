@@ -1,11 +1,20 @@
 // db.js - Adaptador de Banco de Dados PostgreSQL para Reversus
 const { Pool } = require('pg');
 
-// A configuração do pool agora usará apenas a connectionString.
-// O modo SSL será determinado pelo parâmetro `sslmode` na própria URL.
-const pool = new Pool({
+// A configuração do pool agora usará apenas a connectionString,
+// mas adicionamos suporte SSL para ambientes de produção.
+const poolConfig = {
   connectionString: process.env.DATABASE_URL,
-});
+};
+
+// Adiciona configuração SSL se não estivermos em um ambiente local
+if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("localhost") && !process.env.DATABASE_URL.includes("127.0.0.1")) {
+  poolConfig.ssl = {
+    rejectUnauthorized: false
+  };
+}
+
+const pool = new Pool(poolConfig);
 
 // --- FUNÇÃO DE TESTE DE CONEXÃO ---
 async function testConnection() {
@@ -284,7 +293,7 @@ async function findOrCreateUser(googlePayload) {
   
   if (res.rows.length === 0) {
     res = await pool.query(
-      `INSERT INTO users (google_id, username, avatar_url, coinversus) VALUES ($1, $2, $3, 100)
+      `INSERT INTO users (google_id, username, avatar_url, coinversus, equipped_avatar_code) VALUES ($1, $2, $3, 100, 'default_1')
        RETURNING *`,
       [googleId, name, avatarUrl]
     );
@@ -402,13 +411,21 @@ async function getTopPlayers(page = 1, limit = 10) {
   const totalPages = Math.ceil(totalPlayers / limit);
 
   const playersRes = await pool.query(
-    `SELECT u.google_id, u.username, u.avatar_url, u.victories, u.coinversus, u.selected_title_code,
+    `SELECT u.google_id, u.username, u.victories, u.coinversus, u.selected_title_code,
+     a.image_url as avatar_url,
      RANK() OVER (ORDER BY u.victories DESC, u.id ASC) as rank
      FROM users u
+     LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
      ORDER BY rank
      LIMIT $1 OFFSET $2`,
     [limit, (page - 1) * limit]
   );
+  
+  playersRes.rows.forEach(p => {
+      if (p.avatar_url && !p.avatar_url.startsWith('http')) {
+          p.avatar_url = `./${p.avatar_url}`;
+      }
+  });
 
   return { players: playersRes.rows, currentPage: page, totalPages };
 }
@@ -506,12 +523,18 @@ async function removeFriend(userId1, userId2) {
 
 async function getFriendsList(userId) {
     const { rows } = await pool.query(
-        `SELECT u.id, u.google_id, u.username, u.avatar_url, u.selected_title_code
+        `SELECT u.id, u.google_id, u.username, u.selected_title_code, a.image_url as avatar_url
          FROM friends f
          JOIN users u ON u.id = CASE WHEN f.user_one_id = $1 THEN f.user_two_id ELSE f.user_one_id END
+         LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
          WHERE f.user_one_id = $1 OR f.user_two_id = $1`,
         [userId]
     );
+     rows.forEach(p => {
+      if (p.avatar_url && !p.avatar_url.startsWith('http')) {
+          p.avatar_url = `./${p.avatar_url}`;
+      }
+    });
     return rows;
 }
 
@@ -533,7 +556,7 @@ async function setSelectedTitle(userId, titleCode) {
 async function setSelectedAvatar(userId, avatarCode) {
     const ownedRes = await pool.query('SELECT 1 FROM user_avatars WHERE user_id = $1 AND avatar_code = $2', [userId, avatarCode]);
     if (ownedRes.rows.length > 0) {
-        await pool.query('UPDATE users SET equipped_avatar_code = $1 WHERE id = $2', [avatarCode, userId]);
+        await pool.query('UPDATE users SET equipped_avatar_code = $1 WHERE id = $2', [userId, avatarCode]);
     } else {
         throw new Error('User does not own this avatar');
     }
@@ -560,20 +583,17 @@ async function getPrivateMessageHistory(userId1, userId2) {
 
 async function getUserProfile(googleId, requesterId = null) {
   const userRes = await pool.query(
-      `SELECT u.*
+      `SELECT u.*, a.image_url as equipped_avatar_url
        FROM users u
+       LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
        WHERE u.google_id = $1`, [googleId]);
   const user = userRes.rows[0];
   if (!user) return null;
 
-  if (user.equipped_avatar_code) {
-      const avatarRes = await pool.query('SELECT image_url FROM avatars WHERE code = $1', [user.equipped_avatar_code]);
-      if (avatarRes.rows.length > 0) {
-          // Construct full URL if it's a relative path
-          const imageUrl = avatarRes.rows[0].image_url;
-          user.avatar_url = imageUrl.startsWith('http') ? imageUrl : `./${imageUrl}`;
-      }
-  }
+  // Prioritize equipped avatar, fallback to Google avatar
+  if (user.equipped_avatar_url) {
+      user.avatar_url = `./${user.equipped_avatar_url}`;
+  } // Otherwise, user.avatar_url (from Google picture) is used
 
   const titlesRes = await pool.query(
     `SELECT t.code, t.name, t.line
