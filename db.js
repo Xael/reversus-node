@@ -65,6 +65,11 @@ const AVATAR_CATALOG = {
     'frank': { name: 'Frank', image_url: 'frank.png', cost: 2000, unlock: null },
     'lele': { name: 'Lelê', image_url: 'lele.png', cost: 2000, unlock: null },
     'vini': { name: 'Vini', image_url: 'vini.png', cost: 2000, unlock: null },
+    'vini2': { name: 'Vini2', image_url: 'vini2.png', cost: 2000, unlock: null },
+    'nathan': { name: 'Nathan', image_url: 'nathan.png', cost: 2000, unlock: null },
+    'pao': { name: 'Pão', image_url: 'pao.png', cost: 2000, unlock: null },
+    'luan': { name: 'Luan', image_url: 'luan.png', cost: 2000, unlock: null },
+    'lorenzo': { name: 'Lorenzo', image_url: 'lorenzo.png', cost: 2000, unlock: null },
     'rodrigo': { name: 'Rodrigo', image_url: 'rodrigo.png', cost: 2000, unlock: null },
     'necroverso': { name: 'Necroverso', image_url: 'necroverso.png', cost: 15000, unlock: 'tutorial_win' },
     'contravox': { name: 'Contravox', image_url: 'contravox.png', cost: 20000, unlock: 'contravox_win' },
@@ -84,6 +89,14 @@ async function ensureSchema() {
   try {
     await client.query('BEGIN');
     const sql = `
+      CREATE TABLE IF NOT EXISTS avatars (
+        code TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        image_url TEXT NOT NULL,
+        cost INT NOT NULL,
+        unlock_achievement_code TEXT
+      );
+    
       CREATE TABLE IF NOT EXISTS users (
         id                SERIAL PRIMARY KEY,
         google_id         TEXT UNIQUE NOT NULL,
@@ -99,6 +112,7 @@ async function ensureSchema() {
       );
       ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_title_code TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS highest_rank_achieved INT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS equipped_avatar_code TEXT REFERENCES avatars(code) ON DELETE SET NULL DEFAULT 'default_1';
       
       CREATE TABLE IF NOT EXISTS banned_users (
         id SERIAL PRIMARY KEY,
@@ -191,14 +205,6 @@ async function ensureSchema() {
         PRIMARY KEY (user_id, achievement_code)
       );
 
-      CREATE TABLE IF NOT EXISTS avatars (
-        code TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        image_url TEXT NOT NULL,
-        cost INT NOT NULL,
-        unlock_achievement_code TEXT
-      );
-
       CREATE TABLE IF NOT EXISTS user_avatars (
         user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         avatar_code TEXT NOT NULL REFERENCES avatars(code) ON DELETE CASCADE,
@@ -281,6 +287,12 @@ async function findOrCreateUser(googlePayload) {
       `INSERT INTO users (google_id, username, avatar_url, coinversus) VALUES ($1, $2, $3, 100)
        RETURNING *`,
       [googleId, name, avatarUrl]
+    );
+    // Grant the default avatar to the new user
+    const userId = res.rows[0].id;
+    await pool.query(
+      `INSERT INTO user_avatars (user_id, avatar_code) VALUES ($1, 'default_1') ON CONFLICT DO NOTHING`,
+      [userId]
     );
   }
   
@@ -518,6 +530,15 @@ async function setSelectedTitle(userId, titleCode) {
     }
 }
 
+async function setSelectedAvatar(userId, avatarCode) {
+    const ownedRes = await pool.query('SELECT 1 FROM user_avatars WHERE user_id = $1 AND avatar_code = $2', [userId, avatarCode]);
+    if (ownedRes.rows.length > 0) {
+        await pool.query('UPDATE users SET equipped_avatar_code = $1 WHERE id = $2', [avatarCode, userId]);
+    } else {
+        throw new Error('User does not own this avatar');
+    }
+}
+
 async function savePrivateMessage(senderId, recipientId, content) {
     await pool.query(
         'INSERT INTO private_messages (sender_id, recipient_id, content) VALUES ($1, $2, $3)',
@@ -544,6 +565,15 @@ async function getUserProfile(googleId, requesterId = null) {
        WHERE u.google_id = $1`, [googleId]);
   const user = userRes.rows[0];
   if (!user) return null;
+
+  if (user.equipped_avatar_code) {
+      const avatarRes = await pool.query('SELECT image_url FROM avatars WHERE code = $1', [user.equipped_avatar_code]);
+      if (avatarRes.rows.length > 0) {
+          // Construct full URL if it's a relative path
+          const imageUrl = avatarRes.rows[0].image_url;
+          user.avatar_url = imageUrl.startsWith('http') ? imageUrl : `./${imageUrl}`;
+      }
+  }
 
   const titlesRes = await pool.query(
     `SELECT t.code, t.name, t.line
@@ -760,5 +790,5 @@ module.exports = {
   getPrivateMessageHistory, getUserProfile, claimDailyReward, createPlayerReport, getPendingReports,
   resolveReport, banUser, unbanUser, getBannedUsers, isUserBanned, resolveReportsForUser,
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
-  checkUserAchievement
+  checkUserAchievement, setSelectedAvatar
 };

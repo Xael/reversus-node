@@ -143,36 +143,40 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
         }
     }
 
-    switch (effectName) {
-        case 'Mais': case 'Menos':
-            target.effects.score = effectName;
-            break;
-        case 'Sobe': case 'Desce': case 'Pula':
-            target.effects.movement = effectName;
-            break;
-        case 'Reversus':
-            if (effectTypeToReverse === 'score') {
-                target.effects.score = getInverseEffect(target.effects.score);
-            } else if (effectTypeToReverse === 'movement') {
-                target.effects.movement = getInverseEffect(target.effects.movement);
+    // Determine which effect category to apply to
+    let isScoreEffect = ['Mais', 'Menos'].includes(effectName);
+    let isMoveEffect = ['Sobe', 'Desce', 'Pula'].includes(effectName);
+
+    // Handle Reversus specifically
+    if (originalCardName === 'Reversus') {
+        if (effectTypeToReverse === 'score') {
+            target.effects.score = getInverseEffect(target.effects.score);
+        } else if (effectTypeToReverse === 'movement') {
+            target.effects.movement = getInverseEffect(target.effects.movement);
+        }
+    } 
+    // Handle global Reversus Total
+    else if (originalCardName === 'Reversus Total' && options.isGlobal) {
+        gameState.reversusTotalActive = true;
+        Object.values(gameState.players).forEach(p => {
+            if (p.effects.score && !p.playedCards.effect.some(c => c.isLocked && ['Mais', 'Menos'].includes(c.lockedEffect))) {
+                p.effects.score = getInverseEffect(p.effects.score);
             }
-            break;
-        case 'Reversus Total':
-            if (options.isGlobal) {
-                gameState.reversusTotalActive = true;
-                Object.values(gameState.players).forEach(p => {
-                    if (p.effects.score && !p.playedCards.effect.some(c => c.isLocked && ['Mais', 'Menos'].includes(c.lockedEffect))) {
-                        p.effects.score = getInverseEffect(p.effects.score);
-                    }
-                    if (p.effects.movement && p.effects.movement !== 'Pula' && !p.playedCards.effect.some(c => c.isLocked && ['Sobe', 'Desce'].includes(c.lockedEffect))) {
-                        p.effects.movement = getInverseEffect(p.effects.movement);
-                    }
-                });
+            if (p.effects.movement && p.effects.movement !== 'Pula' && !p.playedCards.effect.some(c => c.isLocked && ['Sobe', 'Desce'].includes(c.lockedEffect))) {
+                p.effects.movement = getInverseEffect(p.effects.movement);
             }
-            break;
+        });
     }
-     gameState.log.unshift({ type: 'system', message: `${casterName} usou ${originalCardName} em ${target.name}.` });
+    // Handle all other simple effects and individual locked Reversus Total
+    else if (isScoreEffect) {
+        target.effects.score = effectName;
+    } else if (isMoveEffect) {
+        target.effects.movement = effectName;
+    }
+    
+    gameState.log.unshift({ type: 'system', message: `${casterName} usou ${originalCardName} em ${target.name}.` });
 };
+
 
 async function triggerFieldEffects_server(room) {
     const { gameState } = room;
@@ -445,14 +449,29 @@ async function calculateScoresAndEndRound(room) {
     gameState.playerIdsInGame.forEach(id => {
         const p = gameState.players[id];
         if (p.isEliminated) return;
+
         let score = p.playedCards.value.reduce((sum, card) => sum + card.value, 0);
         let restoValue = p.resto?.value || 0;
-        
+
+        // Apply field effects
+        const activeEffects = gameState.activeFieldEffects || [];
+        if (activeEffects.some(fe => fe.name === 'Resto Maior' && fe.appliesTo === id)) restoValue = 10;
+        if (activeEffects.some(fe => fe.name === 'Resto Menor' && fe.appliesTo === id)) restoValue = 2;
+
         if (p.effects.score === 'Mais') score += restoValue;
-        if (p.effects.score === 'Menos') score -= restoValue;
+
+        let scoreModifier = 1;
+        if (activeEffects.some(fe => fe.name === 'Super Exposto' && fe.appliesTo === id)) {
+            scoreModifier = 2;
+            gameState.log.unshift({ type: 'system', message: `Efeito 'Super Exposto' dobrou o efeito negativo em ${p.name}!` });
+        }
+        
+        if (p.effects.score === 'Menos') score -= (restoValue * scoreModifier);
+        
         finalScores[id] = score;
     });
 
+    // Determine winner(s)
     let winners = [];
     if (gameState.playerIdsInGame.filter(pId => !gameState.players[pId].isEliminated).length > 0) {
         let highestScore = -Infinity;
@@ -460,13 +479,15 @@ async function calculateScoresAndEndRound(room) {
             const p = gameState.players[id];
             if (p.isEliminated) return;
             if (finalScores[id] > highestScore) {
-                highestScore = finalScores[id]; winners = [id];
+                highestScore = finalScores[id];
+                winners = [id];
             } else if (finalScores[id] === highestScore) {
                 winners.push(id);
             }
         });
     }
 
+    // Handle tie logic
     if (winners.length > 1) {
         if (gameState.gameMode === 'duo') {
             const firstWinnerTeam = TEAM_A_IDS.includes(winners[0]) ? 'A' : 'B';
@@ -487,17 +508,56 @@ async function calculateScoresAndEndRound(room) {
     await new Promise(resolve => setTimeout(resolve, 5000));
     if (!rooms[room.id]) return;
 
+    // Apply pawn movements
     gameState.playerIdsInGame.forEach(id => {
         const p = gameState.players[id];
         if (p.isEliminated) return;
-        let movement = 0;
-        const isWinner = winners.includes(id);
 
-        if (isWinner) movement++;
-        if (p.effects.movement === 'Sobe') movement++;
-        if (p.effects.movement === 'Desce') movement--;
-        if (p.effects.movement === 'Pula' && p.targetPathForPula !== null) p.pathId = p.targetPathForPula;
-        if (movement !== 0) p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + movement));
+        if (p.effects.movement === 'Pula' && p.targetPathForPula !== null) {
+            p.pathId = p.targetPathForPula;
+        }
+
+        let netMovement = 0;
+        const isWinner = winners.includes(id);
+        const isLoser = !isWinner && winners.length > 0;
+        const activeEffects = gameState.activeFieldEffects || [];
+
+        // Win/Loss standard
+        if (isWinner) {
+            netMovement++;
+        }
+
+        // Card Effects
+        if (p.effects.movement === 'Sobe') netMovement++;
+        if (p.effects.movement === 'Desce') {
+            let movementModifier = activeEffects.some(fe => fe.name === 'Super Exposto' && fe.appliesTo === id) ? 2 : 1;
+            netMovement -= (1 * movementModifier);
+        }
+
+        // Win/Loss Field Effects
+        if (isWinner) {
+            if (activeEffects.some(fe => fe.name === 'Parada' && fe.appliesTo === id)) {
+                gameState.log.unshift({ type: 'system', message: `Efeito 'Parada' impede ${p.name} de avançar.` });
+                netMovement--; // Cancel the standard win advance
+            }
+            if (activeEffects.some(fe => fe.name === 'Desafio' && fe.appliesTo === id) && p.effects.score !== 'Mais' && p.effects.movement !== 'Sobe') {
+                netMovement += 2; // Already advanced 1, so add 2 more
+                gameState.log.unshift({ type: 'system', message: `Efeito 'Desafio' completo! ${p.name} ganha um bônus de avanço!` });
+            }
+        } else if (isLoser) {
+            if (activeEffects.some(fe => fe.name === 'Castigo' && fe.appliesTo === id)) {
+                netMovement -= 3;
+                gameState.log.unshift({ type: 'system', message: `Efeito 'Castigo' ativado para ${p.name}.` });
+            }
+            if (activeEffects.some(fe => fe.name === 'Impulso' && fe.appliesTo === id)) {
+                netMovement += 1;
+                gameState.log.unshift({ type: 'system', message: `Efeito 'Impulso' ativado para ${p.name}.` });
+            }
+        }
+
+        if (netMovement !== 0) {
+            p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + netMovement));
+        }
     });
 
     if (await checkGameEnd(room, 'score')) return;
@@ -760,6 +820,20 @@ io.on('connection', (socket) => {
         } catch (error) {
             console.error("Buy Avatar server error:", error);
             socket.emit('avatarPurchaseError', { message: 'Ocorreu um erro no servidor.' });
+        }
+    });
+
+    socket.on('setSelectedAvatar', async ({ avatarCode }) => {
+        if (!socket.data.userProfile) return;
+        try {
+            const userId = socket.data.userProfile.id;
+            await db.setSelectedAvatar(userId, avatarCode);
+            const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, userId);
+            socket.data.userProfile = updatedProfile;
+            socket.emit('profileData', updatedProfile);
+        } catch (error) {
+            console.error("Set Avatar Error:", error);
+            socket.emit('error', 'Falha ao equipar o avatar.');
         }
     });
 
@@ -1085,6 +1159,7 @@ io.on('connection', (socket) => {
                     playedValueCardThisTurn: false, liveScore: 0,
                     status: 'neutral', isEliminated: false,
                     coinversus: p.userProfile.coinversus,
+                    avatar_url: p.userProfile.avatar_url
                 }
             ])
         );
@@ -1199,7 +1274,10 @@ io.on('connection', (socket) => {
                 }
             }
     
-            if (options.isIndividualLock) card.isLocked = true;
+            if (options.isIndividualLock) {
+                card.isLocked = true;
+                card.lockedEffect = options.effectNameToApply;
+            }
             if (card.name === 'Pula' && options.pulaPath !== undefined) cardDestinationPlayer.targetPathForPula = options.pulaPath;
             if (card.name === 'Reversus') card.reversedEffectType = options.effectType;
             
@@ -1597,6 +1675,7 @@ async function checkAndStartMatch(mode) {
                 playedValueCardThisTurn: false, liveScore: 0,
                 status: 'neutral', isEliminated: false,
                 coinversus: p.userProfile.coinversus,
+                avatar_url: p.userProfile.avatar_url,
             }])
         );
         Object.values(players).forEach(p => {
