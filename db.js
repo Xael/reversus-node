@@ -511,8 +511,7 @@ async function removeFriend(userId1, userId2) {
 
 async function getFriendsList(userId) {
     const { rows } = await pool.query(
-        `SELECT u.id, u.google_id, u.username, u.selected_title_code, 
-         COALESCE(a.image_url, u.avatar_url) as avatar_url
+        `SELECT u.id, u.google_id, u.username, u.selected_title_code, a.image_url as avatar_url
          FROM friends f
          JOIN users u ON u.id = CASE WHEN f.user_one_id = $1 THEN f.user_two_id ELSE f.user_one_id END
          LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
