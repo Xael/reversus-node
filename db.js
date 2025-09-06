@@ -93,6 +93,7 @@ function levelFromXp(xp) {
 }
 
 // --- CRIAÇÃO DO ESQUEMA DO BANCO ---
+let hasResetAvatars = false;
 async function ensureSchema() {
   const client = await pool.connect();
   try {
@@ -251,6 +252,12 @@ async function ensureSchema() {
         if(titleRes.rows.length > 0) {
            await client.query(`INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [creatorId, titleRes.rows[0].id]);
         }
+    }
+
+    if (!hasResetAvatars) {
+        await client.query('UPDATE users SET equipped_avatar_code = NULL');
+        console.log('Todos os avatares equipados foram redefinidos para o padrão no início do servidor.');
+        hasResetAvatars = true;
     }
 
     await client.query('COMMIT');
