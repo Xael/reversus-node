@@ -121,7 +121,7 @@ async function ensureSchema() {
       );
       ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_title_code TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS highest_rank_achieved INT;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS equipped_avatar_code TEXT REFERENCES avatars(code) ON DELETE SET NULL DEFAULT 'default_1';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS equipped_avatar_code TEXT REFERENCES avatars(code) ON DELETE SET NULL DEFAULT NULL;
       
       CREATE TABLE IF NOT EXISTS banned_users (
         id SERIAL PRIMARY KEY,
@@ -293,15 +293,9 @@ async function findOrCreateUser(googlePayload) {
   
   if (res.rows.length === 0) {
     res = await pool.query(
-      `INSERT INTO users (google_id, username, avatar_url, coinversus, equipped_avatar_code) VALUES ($1, $2, $3, 100, 'default_1')
+      `INSERT INTO users (google_id, username, avatar_url, coinversus, equipped_avatar_code) VALUES ($1, $2, $3, 100, NULL)
        RETURNING *`,
       [googleId, name, avatarUrl]
-    );
-    // Grant the default avatar to the new user
-    const userId = res.rows[0].id;
-    await pool.query(
-      `INSERT INTO user_avatars (user_id, avatar_code) VALUES ($1, 'default_1') ON CONFLICT DO NOTHING`,
-      [userId]
     );
   }
   
