@@ -554,13 +554,18 @@ async function setSelectedTitle(userId, titleCode) {
 }
 
 async function setSelectedAvatar(userId, avatarCode) {
-    const ownedRes = await pool.query('SELECT 1 FROM user_avatars WHERE user_id = $1 AND avatar_code = $2', [userId, avatarCode]);
-    if (ownedRes.rows.length > 0) {
-        await pool.query('UPDATE users SET equipped_avatar_code = $1 WHERE id = $2', [userId, avatarCode]);
+    if (avatarCode === 'default') {
+        await pool.query('UPDATE users SET equipped_avatar_code = NULL WHERE id = $1', [userId]);
     } else {
-        throw new Error('User does not own this avatar');
+        const ownedRes = await pool.query('SELECT 1 FROM user_avatars WHERE user_id = $1 AND avatar_code = $2', [userId, avatarCode]);
+        if (ownedRes.rows.length > 0) {
+            await pool.query('UPDATE users SET equipped_avatar_code = $1 WHERE id = $2', [avatarCode, userId]);
+        } else {
+            throw new Error('User does not own this avatar');
+        }
     }
 }
+
 
 async function savePrivateMessage(senderId, recipientId, content) {
     await pool.query(
