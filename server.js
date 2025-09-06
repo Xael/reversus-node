@@ -8,11 +8,6 @@ const db = require('./db.js');
 const app = express();
 const server = http.createServer(app);
 
-// --- Static File Serving ---
-app.use(express.static('.')); 
-// -----------------------------------------
-
-
 const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 const ADMIN_EMAIL = 'alexblbn@gmail.com';
@@ -739,7 +734,6 @@ io.on('connection', (socket) => {
             userSockets.set(socket.id, userProfile.id);
             
             const profileFromDb = await db.getUserProfile(userProfile.google_id, userProfile.id);
-            await db.logUserAccess(userProfile.id);
             
             // Check for Admin
             if (payload.email === ADMIN_EMAIL) {
@@ -1537,15 +1531,7 @@ io.on('connection', (socket) => {
             }));
             const banned = await db.getBannedUsers();
             const pendingReports = await db.getPendingReports();
-            const dailyStats = await db.getDailyAccessStats();
-
-            socket.emit('adminData', { 
-                online, 
-                banned, 
-                pendingReports,
-                totalConnections: io.engine.clientsCount,
-                dailyStats
-            });
+            socket.emit('adminData', { online, banned, pendingReports });
         } catch (error) {
             console.error("Admin GetData Error:", error);
         }
@@ -1568,7 +1554,10 @@ io.on('connection', (socket) => {
             }
             console.log(`Admin ${socket.data.userProfile.username} banned user ID ${userId}`);
             
-            socket.emit('adminActionSuccess', `Usuário ID ${userId} banido com sucesso.`);
+            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
+            const banned = await db.getBannedUsers();
+            const pendingReports = await db.getPendingReports();
+            socket.emit('adminData', { online, banned, pendingReports });
         } catch (error) {
             console.error("Admin Ban Error:", error);
         }
@@ -1578,19 +1567,13 @@ io.on('connection', (socket) => {
         if (!socket.data.userProfile?.isAdmin) return;
         try {
             await db.resolveReport(reportId, socket.data.userProfile.id);
-            socket.emit('adminActionSuccess', `Denúncia #${reportId} dispensada.`);
+            // Re-busca e envia os dados para o admin que agiu
+            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
+            const banned = await db.getBannedUsers();
+            const pendingReports = await db.getPendingReports();
+            socket.emit('adminData', { online, banned, pendingReports });
         } catch (error) {
             console.error("Admin Resolve Report Error:", error);
-        }
-    });
-
-    socket.on('admin:addCoins', async ({ amount }) => {
-        if (!socket.data.userProfile?.isAdmin) return;
-        try {
-            await db.updateUserCoins(socket.data.userProfile.id, amount);
-            socket.emit('adminActionSuccess', `${amount} CoinVersus adicionados com sucesso.`);
-        } catch (error) {
-            console.error("Admin Add Coins Error:", error);
         }
     });
 
@@ -1600,7 +1583,10 @@ io.on('connection', (socket) => {
         try {
             await db.unbanUser(userId);
             console.log(`Admin ${socket.data.userProfile.username} unbanned user ID ${userId}`);
-            socket.emit('adminActionSuccess', `Banimento do usuário ID ${userId} removido.`);
+            // Refresh admin panel
+            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
+            const banned = await db.getBannedUsers();
+            socket.emit('adminData', { online, banned });
         } catch (error) {
             console.error("Admin Unban Error:", error);
         }
