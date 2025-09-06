@@ -222,6 +222,12 @@ async function ensureSchema() {
         PRIMARY KEY (user_id, avatar_code)
       );
 
+      CREATE TABLE IF NOT EXISTS daily_access_log (
+          user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          access_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          PRIMARY KEY (user_id, access_date)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
     `;
     await client.query(sql);
@@ -797,6 +803,34 @@ async function purchaseAvatar(userId, avatarCode) {
     }
 }
 
+async function logUserAccess(userId) {
+    try {
+        await pool.query(
+            `INSERT INTO daily_access_log (user_id, access_date) VALUES ($1, CURRENT_DATE) ON CONFLICT (user_id, access_date) DO NOTHING`,
+            [userId]
+        );
+    } catch (error) {
+        console.error(`Failed to log daily access for user ${userId}:`, error);
+    }
+}
+
+async function getDailyAccessStats() {
+    try {
+        const { rows } = await pool.query(`
+            SELECT access_date, COUNT(user_id) as unique_users
+            FROM daily_access_log
+            WHERE access_date >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY access_date
+            ORDER BY access_date DESC
+        `);
+        return rows;
+    } catch (error) {
+        console.error("Failed to get daily access stats:", error);
+        return [];
+    }
+}
+
+
 module.exports = {
   testConnection, ensureSchema, findOrCreateUser, addXp, addMatchToHistory, updateUserRankAndTitles,
   getTopPlayers, searchUsers, getFriendshipStatus, sendFriendRequest, getPendingFriendRequests,
@@ -804,5 +838,5 @@ module.exports = {
   getPrivateMessageHistory, getUserProfile, claimDailyReward, createPlayerReport, getPendingReports,
   resolveReport, banUser, unbanUser, getBannedUsers, isUserBanned, resolveReportsForUser,
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
-  checkUserAchievement, setSelectedAvatar
+  checkUserAchievement, setSelectedAvatar, logUserAccess, getDailyAccessStats
 };
