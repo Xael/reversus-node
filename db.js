@@ -392,19 +392,6 @@ async function updateUserRankAndTitles(userId) {
 }
 
 
-async function grantTitleByCode(userId, titleCode, client = pool) {
-    const titleRes = await client.query(`SELECT id FROM titles WHERE code = $1`, [titleCode]);
-    if (titleRes.rows[0]) {
-        const titleId = titleRes.rows[0].id;
-        await client.query(
-            `INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-            [userId, titleId]
-        );
-    } else {
-        console.error(`Tentativa de conceder um código de título inexistente: ${titleCode}`);
-    }
-}
-
 async function getTopPlayers(page = 1, limit = 10) {
   const totalRes = await pool.query('SELECT COUNT(*) FROM users');
   const totalPlayers = parseInt(totalRes.rows[0].count, 10);
@@ -412,7 +399,7 @@ async function getTopPlayers(page = 1, limit = 10) {
 
   const playersRes = await pool.query(
     `SELECT u.google_id, u.username, u.victories, u.coinversus, u.selected_title_code,
-     a.image_url as avatar_url,
+     COALESCE(a.image_url, u.avatar_url) as avatar_url,
      RANK() OVER (ORDER BY u.victories DESC, u.id ASC) as rank
      FROM users u
      LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
