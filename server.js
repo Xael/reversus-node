@@ -8,11 +8,6 @@ const db = require('./db.js');
 const app = express();
 const server = http.createServer(app);
 
-// --- Static File Serving ---
-app.use(express.static('.')); 
-// -----------------------------------------
-
-
 const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 const ADMIN_EMAIL = 'alexblbn@gmail.com';
@@ -148,51 +143,20 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
         }
     }
 
-    if (originalCardName === 'Reversus') {
-        const scoreEffectCategory = ['Mais', 'Menos'];
-        const moveEffectCategory = ['Sobe', 'Desce', 'Pula'];
+    // Determine which effect category to apply to
+    let isScoreEffect = ['Mais', 'Menos'].includes(effectName);
+    let isMoveEffect = ['Sobe', 'Desce', 'Pula'].includes(effectName);
 
+    // Handle Reversus specifically
+    if (originalCardName === 'Reversus') {
         if (effectTypeToReverse === 'score') {
-            const cardToReverseIndex = target.playedCards.effect.findIndex(c => scoreEffectCategory.includes(c.lockedEffect || c.name));
-            if (cardToReverseIndex > -1) {
-                const cardToReverse = target.playedCards.effect[cardToReverseIndex];
-                if (cardToReverse.isLocked) {
-                    gameState.log.unshift({ type: 'system', message: `Ação bloqueada! O efeito em ${target.name} está travado.` });
-                    const reversusCardIndex = target.playedCards.effect.findIndex(c => c.id === card.id);
-                    if (reversusCardIndex > -1) {
-                        const [reversusCard] = target.playedCards.effect.splice(reversusCardIndex, 1);
-                        gameState.discardPiles.effect.push(reversusCard);
-                    }
-                    return;
-                }
-                const [removedCard] = target.playedCards.effect.splice(cardToReverseIndex, 1);
-                gameState.discardPiles.effect.push(removedCard);
-            }
             target.effects.score = getInverseEffect(target.effects.score);
         } else if (effectTypeToReverse === 'movement') {
-            const cardToReverseIndex = target.playedCards.effect.findIndex(c => moveEffectCategory.includes(c.lockedEffect || c.name));
-            if (cardToReverseIndex > -1) {
-                const cardToReverse = target.playedCards.effect[cardToReverseIndex];
-                 if (cardToReverse.isLocked) {
-                    gameState.log.unshift({ type: 'system', message: `Ação bloqueada! O efeito em ${target.name} está travado.` });
-                    const reversusCardIndex = target.playedCards.effect.findIndex(c => c.id === card.id);
-                    if (reversusCardIndex > -1) {
-                        const [reversusCard] = target.playedCards.effect.splice(reversusCardIndex, 1);
-                        gameState.discardPiles.effect.push(reversusCard);
-                    }
-                    return;
-                }
-                const [removedCard] = target.playedCards.effect.splice(cardToReverseIndex, 1);
-                gameState.discardPiles.effect.push(removedCard);
-            }
-
-            if(target.effects.movement === 'Pula') {
-                target.effects.movement = null;
-            } else {
-                target.effects.movement = getInverseEffect(target.effects.movement);
-            }
+            target.effects.movement = getInverseEffect(target.effects.movement);
         }
-    } else if (originalCardName === 'Reversus Total' && options.isGlobal) {
+    } 
+    // Handle global Reversus Total
+    else if (originalCardName === 'Reversus Total' && options.isGlobal) {
         gameState.reversusTotalActive = true;
         Object.values(gameState.players).forEach(p => {
             if (p.effects.score && !p.playedCards.effect.some(c => c.isLocked && ['Mais', 'Menos'].includes(c.lockedEffect))) {
@@ -202,14 +166,12 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
                 p.effects.movement = getInverseEffect(p.effects.movement);
             }
         });
-    } else {
-        let isScoreEffect = ['Mais', 'Menos'].includes(effectName);
-        let isMoveEffect = ['Sobe', 'Desce', 'Pula'].includes(effectName);
-        if (isScoreEffect) {
-            target.effects.score = effectName;
-        } else if (isMoveEffect) {
-            target.effects.movement = effectName;
-        }
+    }
+    // Handle all other simple effects and individual locked Reversus Total
+    else if (isScoreEffect) {
+        target.effects.score = effectName;
+    } else if (isMoveEffect) {
+        target.effects.movement = effectName;
     }
     
     gameState.log.unshift({ type: 'system', message: `${casterName} usou ${originalCardName} em ${target.name}.` });
@@ -233,95 +195,22 @@ async function triggerFieldEffects_server(room) {
 
         if (space && space.effectName && !space.isUsed) {
             const isPositive = space.color === 'blue';
-            const effectName = space.effectName;
-            gameState.log.unshift({ type: 'system', message: `${player.name} ativou o Efeito de Campo: ${effectName}` });
+            gameState.log.unshift({ type: 'system', message: `${player.name} parou em uma casa ${isPositive ? 'azul' : 'vermelha'}! Ativando efeito: ${space.effectName}`});
             
-            let effectSucceeded = false;
-
-            // Handle active effects that modify game state directly
-            switch (effectName) {
-                case 'Jogo Aberto':
-                    gameState.revealedHands = gameState.playerIdsInGame.filter(pId => pId !== id);
-                    effectSucceeded = true;
-                    break;
-                case 'Reversus Total':
-                    gameState.reversusTotalActive = true;
-                    effectSucceeded = true;
-                    break;
-                case 'Carta Menor': {
-                    const valueCards = player.hand.filter(c => c.type === 'value').sort((a, b) => a.value - b.value);
-                    if (valueCards.length > 0) {
-                        const cardToDiscard = valueCards[0];
-                        player.hand = player.hand.filter(c => c.id !== cardToDiscard.id);
-                        gameState.discardPiles.value.push(cardToDiscard);
-                        const newCard = dealCard(gameState, 'value');
-                        if (newCard) player.hand.push(newCard);
-                        gameState.log.unshift({ type: 'system', message: `${player.name} descartou sua carta de menor valor (${cardToDiscard.name}) e comprou uma nova.` });
-                        effectSucceeded = true;
-                    }
-                    break;
-                }
-                case 'Carta Maior': {
-                    const valueCards = player.hand.filter(c => c.type === 'value').sort((a, b) => b.value - a.value);
-                    if (valueCards.length > 0) {
-                        const cardToDiscard = valueCards[0];
-                        player.hand = player.hand.filter(c => c.id !== cardToDiscard.id);
-                        gameState.discardPiles.value.push(cardToDiscard);
-                        const newCard = dealCard(gameState, 'value');
-                        if (newCard) player.hand.push(newCard);
-                        gameState.log.unshift({ type: 'system', message: `${player.name} descartou sua carta de maior valor (${cardToDiscard.name}) e comprou uma nova.` });
-                        effectSucceeded = true;
-                    }
-                    break;
-                }
-                case 'Troca Justa':
-                case 'Troca Injusta': { // Combine logic, as both target a random opponent now for PvP
-                    const opponents = gameState.playerIdsInGame.filter(pId => pId !== id && !gameState.players[pId].isEliminated);
-                    if (opponents.length > 0) {
-                        const targetPlayer = gameState.players[opponents[Math.floor(Math.random() * opponents.length)]];
-                        const myCards = player.hand.filter(c => c.type === 'value').sort((a, b) => a.value - b.value);
-                        const targetCards = targetPlayer.hand.filter(c => c.type === 'value').sort((a, b) => a.value - b.value);
-
-                        if (myCards.length > 0 && targetCards.length > 0) {
-                            const cardToGive = (effectName === 'Troca Justa') ? myCards[0] : myCards[myCards.length - 1];
-                            const cardToTake = (effectName === 'Troca Justa') ? targetCards[targetCards.length - 1] : targetCards[0];
-                            
-                            // Swap
-                            player.hand = player.hand.filter(c => c.id !== cardToGive.id);
-                            targetPlayer.hand = targetPlayer.hand.filter(c => c.id !== cardToTake.id);
-                            player.hand.push(cardToTake);
-                            targetPlayer.hand.push(cardToGive);
-
-                            gameState.log.unshift({ type: 'system', message: `${effectName}: ${player.name} trocou ${cardToGive.name} pela ${cardToTake.name} de ${targetPlayer.name}.` });
-                            effectSucceeded = true;
-                        }
-                    }
-                    break;
-                }
-                case 'Total Revesus Nada!': {
-                    const effectCards = player.hand.filter(c => c.type === 'effect');
-                    if (effectCards.length > 0) {
-                        player.hand = player.hand.filter(c => c.type !== 'effect');
-                        gameState.discardPiles.effect.push(...effectCards);
-                        gameState.log.unshift({ type: 'system', message: `${player.name} descartou ${effectCards.length} carta(s) de efeito.` });
-                        effectSucceeded = true;
-                    }
-                    break;
-                }
-                default:
-                    // This handles passive effects
-                    gameState.activeFieldEffects.push({
-                        name: effectName,
-                        type: isPositive ? 'positive' : 'negative',
-                        appliesTo: player.id
-                    });
-                    effectSucceeded = true;
-                    break;
+            // For now, only handle status effects server-side for simplicity.
+            const effectName = space.effectName;
+            if (['Jogo Aberto', 'Imunidade', 'Desafio', 'Impulso', 'Super Exposto', 'Castigo', 'Parada', 'Resto Maior', 'Resto Menor'].includes(effectName)) {
+                gameState.activeFieldEffects.push({
+                    name: effectName,
+                    type: isPositive ? 'positive' : 'negative',
+                    appliesTo: player.id
+                });
             }
-
-            if (effectSucceeded) {
-                space.isUsed = true;
+             if (effectName === 'Jogo Aberto') {
+                gameState.revealedHands = gameState.playerIdsInGame.filter(pId => pId !== player.id);
             }
+            // Mark as used so it doesn't trigger again
+            space.isUsed = true;
         }
     }
 }
@@ -845,7 +734,6 @@ io.on('connection', (socket) => {
             userSockets.set(socket.id, userProfile.id);
             
             const profileFromDb = await db.getUserProfile(userProfile.google_id, userProfile.id);
-            await db.logUserAccess(userProfile.id);
             
             // Check for Admin
             if (payload.email === ADMIN_EMAIL) {
@@ -1643,15 +1531,7 @@ io.on('connection', (socket) => {
             }));
             const banned = await db.getBannedUsers();
             const pendingReports = await db.getPendingReports();
-            const dailyStats = await db.getDailyAccessStats();
-
-            socket.emit('adminData', { 
-                online, 
-                banned, 
-                pendingReports,
-                totalConnections: io.engine.clientsCount,
-                dailyStats
-            });
+            socket.emit('adminData', { online, banned, pendingReports });
         } catch (error) {
             console.error("Admin GetData Error:", error);
         }
@@ -1674,7 +1554,10 @@ io.on('connection', (socket) => {
             }
             console.log(`Admin ${socket.data.userProfile.username} banned user ID ${userId}`);
             
-            socket.emit('adminActionSuccess', `Usuário ID ${userId} banido com sucesso.`);
+            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
+            const banned = await db.getBannedUsers();
+            const pendingReports = await db.getPendingReports();
+            socket.emit('adminData', { online, banned, pendingReports });
         } catch (error) {
             console.error("Admin Ban Error:", error);
         }
@@ -1684,19 +1567,13 @@ io.on('connection', (socket) => {
         if (!socket.data.userProfile?.isAdmin) return;
         try {
             await db.resolveReport(reportId, socket.data.userProfile.id);
-            socket.emit('adminActionSuccess', `Denúncia #${reportId} dispensada.`);
+            // Re-busca e envia os dados para o admin que agiu
+            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
+            const banned = await db.getBannedUsers();
+            const pendingReports = await db.getPendingReports();
+            socket.emit('adminData', { online, banned, pendingReports });
         } catch (error) {
             console.error("Admin Resolve Report Error:", error);
-        }
-    });
-
-    socket.on('admin:addCoins', async ({ amount }) => {
-        if (!socket.data.userProfile?.isAdmin) return;
-        try {
-            await db.updateUserCoins(socket.data.userProfile.id, amount);
-            socket.emit('adminActionSuccess', `${amount} CoinVersus adicionados com sucesso.`);
-        } catch (error) {
-            console.error("Admin Add Coins Error:", error);
         }
     });
 
@@ -1706,7 +1583,10 @@ io.on('connection', (socket) => {
         try {
             await db.unbanUser(userId);
             console.log(`Admin ${socket.data.userProfile.username} unbanned user ID ${userId}`);
-            socket.emit('adminActionSuccess', `Banimento do usuário ID ${userId} removido.`);
+            // Refresh admin panel
+            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
+            const banned = await db.getBannedUsers();
+            socket.emit('adminData', { online, banned });
         } catch (error) {
             console.error("Admin Unban Error:", error);
         }

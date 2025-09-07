@@ -93,7 +93,6 @@ function levelFromXp(xp) {
 }
 
 // --- CRIAÇÃO DO ESQUEMA DO BANCO ---
-let hasResetAvatars = false;
 async function ensureSchema() {
   const client = await pool.connect();
   try {
@@ -222,12 +221,6 @@ async function ensureSchema() {
         PRIMARY KEY (user_id, avatar_code)
       );
 
-      CREATE TABLE IF NOT EXISTS daily_access_log (
-          user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          access_date DATE NOT NULL DEFAULT CURRENT_DATE,
-          PRIMARY KEY (user_id, access_date)
-      );
-
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
     `;
     await client.query(sql);
@@ -258,12 +251,6 @@ async function ensureSchema() {
         if(titleRes.rows.length > 0) {
            await client.query(`INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [creatorId, titleRes.rows[0].id]);
         }
-    }
-
-    if (!hasResetAvatars) {
-        await client.query('UPDATE users SET equipped_avatar_code = NULL');
-        console.log('Todos os avatares equipados foram redefinidos para o padrão no início do servidor.');
-        hasResetAvatars = true;
     }
 
     await client.query('COMMIT');
@@ -517,8 +504,7 @@ async function removeFriend(userId1, userId2) {
 
 async function getFriendsList(userId) {
     const { rows } = await pool.query(
-        `SELECT u.id, u.google_id, u.username, u.selected_title_code, 
-         COALESCE(a.image_url, u.avatar_url) as avatar_url
+        `SELECT u.id, u.google_id, u.username, u.selected_title_code, a.image_url as avatar_url
          FROM friends f
          JOIN users u ON u.id = CASE WHEN f.user_one_id = $1 THEN f.user_two_id ELSE f.user_one_id END
          LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
@@ -803,34 +789,6 @@ async function purchaseAvatar(userId, avatarCode) {
     }
 }
 
-async function logUserAccess(userId) {
-    try {
-        await pool.query(
-            `INSERT INTO daily_access_log (user_id, access_date) VALUES ($1, CURRENT_DATE) ON CONFLICT (user_id, access_date) DO NOTHING`,
-            [userId]
-        );
-    } catch (error) {
-        console.error(`Failed to log daily access for user ${userId}:`, error);
-    }
-}
-
-async function getDailyAccessStats() {
-    try {
-        const { rows } = await pool.query(`
-            SELECT access_date, COUNT(user_id) as unique_users
-            FROM daily_access_log
-            WHERE access_date >= CURRENT_DATE - INTERVAL '30 days'
-            GROUP BY access_date
-            ORDER BY access_date DESC
-        `);
-        return rows;
-    } catch (error) {
-        console.error("Failed to get daily access stats:", error);
-        return [];
-    }
-}
-
-
 module.exports = {
   testConnection, ensureSchema, findOrCreateUser, addXp, addMatchToHistory, updateUserRankAndTitles,
   getTopPlayers, searchUsers, getFriendshipStatus, sendFriendRequest, getPendingFriendRequests,
@@ -838,5 +796,5 @@ module.exports = {
   getPrivateMessageHistory, getUserProfile, claimDailyReward, createPlayerReport, getPendingReports,
   resolveReport, banUser, unbanUser, getBannedUsers, isUserBanned, resolveReportsForUser,
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
-  checkUserAchievement, setSelectedAvatar, logUserAccess, getDailyAccessStats
+  checkUserAchievement, setSelectedAvatar
 };
