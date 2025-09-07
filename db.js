@@ -222,6 +222,12 @@ async function ensureSchema() {
         PRIMARY KEY (user_id, avatar_code)
       );
 
+      CREATE TABLE IF NOT EXISTS daily_access_log (
+          user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          access_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          PRIMARY KEY (user_id, access_date)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
     `;
     await client.query(sql);
@@ -400,7 +406,7 @@ async function getTopPlayers(page = 1, limit = 10) {
 
   const playersRes = await pool.query(
     `SELECT u.google_id, u.username, u.victories, u.coinversus, u.selected_title_code,
-     COALESCE(a.image_url, u.avatar_url) as avatar_url,
+     COALESCE(a.image_url, u.avatar_url, 'aleatorio1.png') as avatar_url,
      RANK() OVER (ORDER BY u.victories DESC, u.id ASC) as rank
      FROM users u
      LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
@@ -461,12 +467,19 @@ async function sendFriendRequest(senderId, receiverId) {
 
 async function getPendingFriendRequests(userId) {
     const { rows } = await pool.query(
-        `SELECT fr.id, fr.sender_id, u.username, u.avatar_url
+        `SELECT fr.id, fr.sender_id, u.username, 
+         COALESCE(a.image_url, u.avatar_url, 'aleatorio1.png') as avatar_url
          FROM friend_requests fr
          JOIN users u ON fr.sender_id = u.id
+         LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
          WHERE fr.receiver_id = $1 AND fr.status = 'pending'`,
         [userId]
     );
+    rows.forEach(p => {
+      if (p.avatar_url && !p.avatar_url.startsWith('http')) {
+          p.avatar_url = `./${p.avatar_url}`;
+      }
+    });
     return rows;
 }
 
@@ -511,7 +524,8 @@ async function removeFriend(userId1, userId2) {
 
 async function getFriendsList(userId) {
     const { rows } = await pool.query(
-        `SELECT u.id, u.google_id, u.username, u.selected_title_code, a.image_url as avatar_url
+        `SELECT u.id, u.google_id, u.username, u.selected_title_code, 
+         COALESCE(a.image_url, u.avatar_url, 'aleatorio1.png') as avatar_url
          FROM friends f
          JOIN users u ON u.id = CASE WHEN f.user_one_id = $1 THEN f.user_two_id ELSE f.user_one_id END
          LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
@@ -796,6 +810,34 @@ async function purchaseAvatar(userId, avatarCode) {
     }
 }
 
+async function logUserAccess(userId) {
+    try {
+        await pool.query(
+            `INSERT INTO daily_access_log (user_id, access_date) VALUES ($1, CURRENT_DATE) ON CONFLICT (user_id, access_date) DO NOTHING`,
+            [userId]
+        );
+    } catch (error) {
+        console.error(`Failed to log daily access for user ${userId}:`, error);
+    }
+}
+
+async function getDailyAccessStats() {
+    try {
+        const { rows } = await pool.query(`
+            SELECT access_date, COUNT(user_id) as unique_users
+            FROM daily_access_log
+            WHERE access_date >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY access_date
+            ORDER BY access_date DESC
+        `);
+        return rows;
+    } catch (error) {
+        console.error("Failed to get daily access stats:", error);
+        return [];
+    }
+}
+
+
 module.exports = {
   testConnection, ensureSchema, findOrCreateUser, addXp, addMatchToHistory, updateUserRankAndTitles,
   getTopPlayers, searchUsers, getFriendshipStatus, sendFriendRequest, getPendingFriendRequests,
@@ -803,5 +845,5 @@ module.exports = {
   getPrivateMessageHistory, getUserProfile, claimDailyReward, createPlayerReport, getPendingReports,
   resolveReport, banUser, unbanUser, getBannedUsers, isUserBanned, resolveReportsForUser,
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
-  checkUserAchievement, setSelectedAvatar
+  checkUserAchievement, setSelectedAvatar, logUserAccess, getDailyAccessStats
 };
