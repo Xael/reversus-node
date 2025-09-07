@@ -1690,6 +1690,17 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('admin:addCoins', async ({ amount }) => {
+        if (!socket.data.userProfile?.isAdmin) return;
+        try {
+            await db.updateUserCoins(socket.data.userProfile.id, amount);
+            socket.emit('adminActionSuccess', `${amount} CoinVersus adicionados com sucesso.`);
+        } catch (error) {
+            console.error("Admin Add Coins Error:", error);
+        }
+    });
+
+
     socket.on('admin:unbanUser', async ({ userId }) => {
         if (!socket.data.userProfile?.isAdmin) return;
         try {

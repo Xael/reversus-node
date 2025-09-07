@@ -406,7 +406,7 @@ async function getTopPlayers(page = 1, limit = 10) {
 
   const playersRes = await pool.query(
     `SELECT u.google_id, u.username, u.victories, u.coinversus, u.selected_title_code,
-     COALESCE(a.image_url, u.avatar_url, 'aleatorio1.png') as avatar_url,
+     COALESCE(a.image_url, u.avatar_url) as avatar_url,
      RANK() OVER (ORDER BY u.victories DESC, u.id ASC) as rank
      FROM users u
      LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
@@ -467,19 +467,12 @@ async function sendFriendRequest(senderId, receiverId) {
 
 async function getPendingFriendRequests(userId) {
     const { rows } = await pool.query(
-        `SELECT fr.id, fr.sender_id, u.username, 
-         COALESCE(a.image_url, u.avatar_url, 'aleatorio1.png') as avatar_url
+        `SELECT fr.id, fr.sender_id, u.username, u.avatar_url
          FROM friend_requests fr
          JOIN users u ON fr.sender_id = u.id
-         LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
          WHERE fr.receiver_id = $1 AND fr.status = 'pending'`,
         [userId]
     );
-    rows.forEach(p => {
-      if (p.avatar_url && !p.avatar_url.startsWith('http')) {
-          p.avatar_url = `./${p.avatar_url}`;
-      }
-    });
     return rows;
 }
 
@@ -525,7 +518,7 @@ async function removeFriend(userId1, userId2) {
 async function getFriendsList(userId) {
     const { rows } = await pool.query(
         `SELECT u.id, u.google_id, u.username, u.selected_title_code, 
-         COALESCE(a.image_url, u.avatar_url, 'aleatorio1.png') as avatar_url
+         COALESCE(a.image_url, u.avatar_url) as avatar_url
          FROM friends f
          JOIN users u ON u.id = CASE WHEN f.user_one_id = $1 THEN f.user_two_id ELSE f.user_one_id END
          LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
