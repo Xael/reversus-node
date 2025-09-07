@@ -155,10 +155,9 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
             target.effects.movement = getInverseEffect(target.effects.movement);
         }
     } 
-    // Handle Reversus Total (global by default, individual only if locked)
-    else if (originalCardName === 'Reversus Total' && !card.isLocked) {
+    // Handle global Reversus Total
+    else if (originalCardName === 'Reversus Total' && options.isGlobal) {
         gameState.reversusTotalActive = true;
-        gameState.log.unshift({ type: 'system', message: `${casterName} ativou o Reversus Total!` });
         Object.values(gameState.players).forEach(p => {
             if (p.effects.score && !p.playedCards.effect.some(c => c.isLocked && ['Mais', 'Menos'].includes(c.lockedEffect))) {
                 p.effects.score = getInverseEffect(p.effects.score);
@@ -179,202 +178,6 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
 };
 
 
-async function executeFieldEffect_server(gameState, player, effectName) {
-    const isDuo = gameState.gameMode === 'duo';
-    const playerTeamIds = isDuo ? (gameState.playerIdsInGame.slice(0, 2).includes(player.id) ? gameState.playerIdsInGame.slice(0, 2) : gameState.playerIdsInGame.slice(2, 4)) : [];
-    const partner = isDuo ? gameState.players[playerTeamIds.find(id => id !== player.id)] : null;
-
-    switch (effectName) {
-        case 'Jogo Aberto':
-            gameState.revealedHands = gameState.playerIdsInGame.filter(pId => pId !== player.id && !gameState.players[pId].isEliminated);
-            gameState.log.unshift({ type: 'system', message: `Efeito 'Jogo Aberto' ativado por ${player.name}! As mãos dos oponentes estão reveladas por esta rodada.` });
-            return true;
-
-        case 'Reversus Total':
-            gameState.reversusTotalActive = true;
-            gameState.log.unshift({ type: 'system', message: `Efeito de Campo 'Reversus Total' ativado por ${player.name}!` });
-            return true;
-
-        case 'Carta Menor': {
-            let actionTaken = false;
-            if (isDuo && partner) {
-                // Player
-                const playerValueCards = player.hand.filter(c => c.type === 'value').sort((a,b) => a.value - b.value);
-                if (playerValueCards.length > 0) {
-                    const card = player.hand.splice(player.hand.findIndex(c => c.id === playerValueCards[0].id), 1)[0];
-                    gameState.discardPiles.value.push(card);
-                    const newCard = dealCard(gameState, 'value');
-                    if (newCard) player.hand.push(newCard);
-                    gameState.log.unshift({ type: 'system', message: `${player.name} descartou ${card.name} e comprou uma nova.` });
-                    actionTaken = true;
-                }
-                // Partner
-                const partnerValueCards = partner.hand.filter(c => c.type === 'value').sort((a,b) => a.value - b.value);
-                if (partnerValueCards.length > 0) {
-                    const card = partner.hand.splice(partner.hand.findIndex(c => c.id === partnerValueCards[0].id), 1)[0];
-                    gameState.discardPiles.value.push(card);
-                    const newCard = dealCard(gameState, 'value');
-                    if (newCard) partner.hand.push(newCard);
-                    gameState.log.unshift({ type: 'system', message: `${partner.name} (parceiro) descartou ${card.name} e comprou uma nova.` });
-                    actionTaken = true;
-                }
-            } else {
-                const valueCards = player.hand.filter(c => c.type === 'value').sort((a,b) => a.value - b.value);
-                if (valueCards.length > 0) {
-                    const card = player.hand.splice(player.hand.findIndex(c => c.id === valueCards[0].id), 1)[0];
-                    gameState.discardPiles.value.push(card);
-                    const newCard = dealCard(gameState, 'value');
-                    if (newCard) player.hand.push(newCard);
-                    gameState.log.unshift({ type: 'system', message: `${player.name} descartou sua carta de menor valor (${card.name}) e comprou uma nova.` });
-                    actionTaken = true;
-                }
-            }
-            return actionTaken;
-        }
-
-        case 'Carta Maior': {
-            let actionTaken = false;
-            if (isDuo && partner) {
-                // Player
-                const playerValueCards = player.hand.filter(c => c.type === 'value').sort((a,b) => b.value - a.value);
-                if (playerValueCards.length > 0) {
-                    const card = player.hand.splice(player.hand.findIndex(c => c.id === playerValueCards[0].id), 1)[0];
-                    gameState.discardPiles.value.push(card);
-                    const newCard = dealCard(gameState, 'value');
-                    if (newCard) player.hand.push(newCard);
-                    gameState.log.unshift({ type: 'system', message: `${player.name} descartou ${card.name} e comprou uma nova.` });
-                    actionTaken = true;
-                }
-                // Partner
-                const partnerValueCards = partner.hand.filter(c => c.type === 'value').sort((a,b) => b.value - a.value);
-                if (partnerValueCards.length > 0) {
-                    const card = partner.hand.splice(partner.hand.findIndex(c => c.id === partnerValueCards[0].id), 1)[0];
-                    gameState.discardPiles.value.push(card);
-                    const newCard = dealCard(gameState, 'value');
-                    if (newCard) partner.hand.push(newCard);
-                    gameState.log.unshift({ type: 'system', message: `${partner.name} (parceiro) descartou ${card.name} e comprou uma nova.` });
-                    actionTaken = true;
-                }
-            } else {
-                const valueCards = player.hand.filter(c => c.type === 'value').sort((a,b) => b.value - a.value);
-                if (valueCards.length > 0) {
-                    const card = player.hand.splice(player.hand.findIndex(c => c.id === valueCards[0].id), 1)[0];
-                    gameState.discardPiles.value.push(card);
-                    const newCard = dealCard(gameState, 'value');
-                    if (newCard) player.hand.push(newCard);
-                    gameState.log.unshift({ type: 'system', message: `${player.name} descartou sua carta de maior valor (${card.name}) e comprou uma nova.` });
-                    actionTaken = true;
-                }
-            }
-            return actionTaken;
-        }
-
-        case 'Troca Justa': {
-            if (isDuo && partner) {
-                const pCards = player.hand.filter(c => c.type === 'value').sort((a,b) => a.value - b.value);
-                const partnerCards = partner.hand.filter(c => c.type === 'value').sort((a,b) => a.value - b.value);
-                if (pCards.length > 0 && partnerCards.length > 0) {
-                    const cardToGive = pCards[0];
-                    const cardToTake = partnerCards[partnerCards.length - 1];
-                    player.hand.splice(player.hand.findIndex(c => c.id === cardToGive.id), 1, cardToTake);
-                    partner.hand.splice(partner.hand.findIndex(c => c.id === cardToTake.id), 1, cardToGive);
-                    gameState.log.unshift({ type: 'system', message: `Troca Justa (Dupla): ${player.name} trocou ${cardToGive.name} pela ${cardToTake.name} de ${partner.name}.` });
-                    return true;
-                }
-            } else {
-                const opponents = gameState.playerIdsInGame.filter(id => id !== player.id && !gameState.players[id].isEliminated);
-                if (opponents.length > 0) {
-                    const targetPlayer = gameState.players[opponents[Math.floor(Math.random() * opponents.length)]];
-                    const pCards = player.hand.filter(c => c.type === 'value').sort((a,b) => a.value - b.value);
-                    const targetCards = targetPlayer.hand.filter(c => c.type === 'value').sort((a,b) => a.value - b.value);
-                    if (pCards.length > 0 && targetCards.length > 0) {
-                        const cardToGive = pCards[0];
-                        const cardToTake = targetCards[targetCards.length - 1];
-                        player.hand.splice(player.hand.findIndex(c => c.id === cardToGive.id), 1, cardToTake);
-                        targetPlayer.hand.splice(targetPlayer.hand.findIndex(c => c.id === cardToTake.id), 1, cardToGive);
-                        gameState.log.unshift({ type: 'system', message: `Troca Justa: ${player.name} trocou ${cardToGive.name} pela ${cardToTake.name} de ${targetPlayer.name}.` });
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
-        case 'Troca Injusta': {
-            if (isDuo && partner) {
-                const pCards = player.hand.filter(c => c.type === 'value').sort((a,b) => b.value - a.value);
-                const partnerCards = partner.hand.filter(c => c.type === 'value').sort((a,b) => b.value - a.value);
-                if (pCards.length > 0 && partnerCards.length > 0) {
-                    const cardToGive = pCards[0];
-                    const cardToTake = partnerCards[partnerCards.length - 1];
-                    player.hand.splice(player.hand.findIndex(c => c.id === cardToGive.id), 1, cardToTake);
-                    partner.hand.splice(partner.hand.findIndex(c => c.id === cardToTake.id), 1, cardToGive);
-                    gameState.log.unshift({ type: 'system', message: `Troca Injusta (Dupla): ${player.name} trocou ${cardToGive.name} pela ${cardToTake.name} de ${partner.name}.` });
-                    return true;
-                }
-            } else {
-                const opponents = gameState.playerIdsInGame.filter(id => id !== player.id && !gameState.players[id].isEliminated);
-                if (opponents.length > 0) {
-                    const targetPlayer = gameState.players[opponents[Math.floor(Math.random() * opponents.length)]];
-                    const pCards = player.hand.filter(c => c.type === 'value').sort((a,b) => b.value - a.value);
-                    const targetCards = targetPlayer.hand.filter(c => c.type === 'value').sort((a,b) => b.value - a.value);
-                    if (pCards.length > 0 && targetCards.length > 0) {
-                        const cardToGive = pCards[0];
-                        const cardToTake = targetCards[targetCards.length - 1];
-                        player.hand.splice(player.hand.findIndex(c => c.id === cardToGive.id), 1, cardToTake);
-                        targetPlayer.hand.splice(targetPlayer.hand.findIndex(c => c.id === cardToTake.id), 1, cardToGive);
-                        gameState.log.unshift({ type: 'system', message: `Troca Injusta: ${player.name} deu ${cardToGive.name} e recebeu ${cardToTake.name} de ${targetPlayer.name}.` });
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
-        case 'Total Revesus Nada!': {
-            let actionTaken = false;
-            if (isDuo && partner) {
-                // Player loses 1 random effect card
-                const pEffectCards = player.hand.filter(c => c.type === 'effect');
-                if (pEffectCards.length > 0) {
-                    const card = pEffectCards[Math.floor(Math.random() * pEffectCards.length)];
-                    player.hand.splice(player.hand.findIndex(c => c.id === card.id), 1);
-                    gameState.discardPiles.effect.push(card);
-                    gameState.log.unshift({ type: 'system', message: `${player.name} descartou ${card.name}.` });
-                    actionTaken = true;
-                }
-                // Partner loses all but 1 effect cards
-                const partnerEffectCards = partner.hand.filter(c => c.type === 'effect');
-                if (partnerEffectCards.length > 1) {
-                    const cardsToDiscard = partnerEffectCards.slice(0, -1);
-                    partner.hand = partner.hand.filter(c => c.type !== 'effect' || c.id === partnerEffectCards[partnerEffectCards.length - 1].id);
-                    gameState.discardPiles.effect.push(...cardsToDiscard);
-                    gameState.log.unshift({ type: 'system', message: `${partner.name} descartou ${cardsToDiscard.length} carta(s) de efeito.` });
-                    actionTaken = true;
-                }
-            } else {
-                const effectCards = player.hand.filter(c => c.type === 'effect');
-                if (effectCards.length > 0) {
-                    player.hand = player.hand.filter(c => c.type !== 'effect');
-                    gameState.discardPiles.effect.push(...effectCards);
-                    gameState.log.unshift({ type: 'system', message: `${player.name} descartou ${effectCards.length} cartas de efeito.` });
-                    actionTaken = true;
-                }
-            }
-            return actionTaken;
-        }
-
-        default:
-            // Handle status effects that just need to be tracked
-            const allPositiveEffects = ['Resto Maior', 'Carta Menor', 'Jogo Aberto', 'Imunidade', 'Desafio', 'Impulso', 'Troca Justa', 'Reversus Total'];
-            const isPositive = allPositiveEffects.includes(effectName);
-            const appliesToList = (isDuo && partner && ['Imunidade', 'Desafio', 'Impulso'].includes(effectName)) ? [player.id, partner.id] : [player.id];
-            appliesToList.forEach(id => gameState.activeFieldEffects.push({ name: effectName, type: isPositive ? 'positive' : 'negative', appliesTo: id }));
-            gameState.log.unshift({ type: 'system', message: `'${effectName}' está ativo para ${player.name}${appliesToList.length > 1 ? ' e sua dupla' : ''}.` });
-            return true;
-    }
-}
-
 async function triggerFieldEffects_server(room) {
     const { gameState } = room;
     if (!gameState) return;
@@ -394,9 +197,18 @@ async function triggerFieldEffects_server(room) {
             const isPositive = space.color === 'blue';
             gameState.log.unshift({ type: 'system', message: `${player.name} parou em uma casa ${isPositive ? 'azul' : 'vermelha'}! Ativando efeito: ${space.effectName}`});
             
-           // Execute the field effect
-            await executeFieldEffect_server(gameState, player, space.effectName);
-            
+            // For now, only handle status effects server-side for simplicity.
+            const effectName = space.effectName;
+            if (['Jogo Aberto', 'Imunidade', 'Desafio', 'Impulso', 'Super Exposto', 'Castigo', 'Parada', 'Resto Maior', 'Resto Menor'].includes(effectName)) {
+                gameState.activeFieldEffects.push({
+                    name: effectName,
+                    type: isPositive ? 'positive' : 'negative',
+                    appliesTo: player.id
+                });
+            }
+             if (effectName === 'Jogo Aberto') {
+                gameState.revealedHands = gameState.playerIdsInGame.filter(pId => pId !== player.id);
+            }
             // Mark as used so it doesn't trigger again
             space.isUsed = true;
         }
@@ -1717,26 +1529,9 @@ io.on('connection', (socket) => {
                 id: userSockets.get(u.socketId), // Get DB ID
                 ...u
             }));
-            // Get total player count (including PvP rooms without login)
-            const totalPlayersOnline = onlineUsers.size + Object.values(rooms).reduce((total, room) => {
-                return total + (room.players ? room.players.length : 0);
-            }, 0);
-            
-            // Get monthly report data
-            const monthlyStats = await db.getMonthlyStats();
-            
             const banned = await db.getBannedUsers();
             const pendingReports = await db.getPendingReports();
-            const adminNews = await db.getAdminNews();
-            
-            socket.emit('adminData', { 
-                online, 
-                banned, 
-                pendingReports, 
-                totalPlayersOnline,
-                monthlyStats,
-                adminNews
-            });
+            socket.emit('adminData', { online, banned, pendingReports });
         } catch (error) {
             console.error("Admin GetData Error:", error);
         }
@@ -1779,19 +1574,6 @@ io.on('connection', (socket) => {
             socket.emit('adminData', { online, banned, pendingReports });
         } catch (error) {
             console.error("Admin Resolve Report Error:", error);
-        }
-    });
-    
-    // Admin News handlers
-    socket.on('admin:createNews', async ({ title, content }) => {
-        if (!socket.data.userProfile?.isAdmin) return;
-        try {
-            await db.createAdminNews(title, content);
-            const adminNews = await db.getAdminNews();
-            socket.emit('adminNewsUpdated', { adminNews });
-        } catch (error) {
-            console.error("Admin Create News Error:", error);
-            socket.emit('error', 'Erro ao criar notícia.');
         }
     });
 

@@ -788,55 +788,6 @@ async function purchaseAvatar(userId, avatarCode) {
         client.release();
     }
 }
-// Admin functions
-async function getMonthlyStats() {
-    try {
-        const now = new Date();
-        const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        
-        const result = await pool.query(`
-            SELECT 
-                COUNT(DISTINCT u.id) as total_players,
-                COUNT(DISTINCT CASE WHEN u.created_at >= $1 THEN u.id END) as new_players_this_month,
-                COUNT(DISTINCT mh.id) as total_matches_played
-            FROM users u
-            LEFT JOIN match_history mh ON u.id = mh.user_id AND mh.created_at >= $1
-        `, [firstDayOfMonth]);
-        
-        return result.rows[0] || { total_players: 0, new_players_this_month: 0, total_matches_played: 0 };
-    } catch (error) {
-        console.error('Error getting monthly stats:', error);
-        return { total_players: 0, new_players_this_month: 0, total_matches_played: 0 };
-    }
-}
-
-async function getAdminNews() {
-    try {
-        const result = await pool.query(`
-            SELECT id, title, content, created_at 
-            FROM admin_news 
-            ORDER BY created_at DESC 
-            LIMIT 10
-        `);
-        return result.rows;
-    } catch (error) {
-        console.error('Error getting admin news:', error);
-        return [];
-    }
-}
-
-async function createAdminNews(title, content) {
-    try {
-        await pool.query(`
-            INSERT INTO admin_news (title, content, created_at) 
-            VALUES ($1, $2, NOW())
-        `, [title, content]);
-        return true;
-    } catch (error) {
-        console.error('Error creating admin news:', error);
-        throw error;
-    }
-}
 
 module.exports = {
   testConnection, ensureSchema, findOrCreateUser, addXp, addMatchToHistory, updateUserRankAndTitles,
@@ -845,5 +796,5 @@ module.exports = {
   getPrivateMessageHistory, getUserProfile, claimDailyReward, createPlayerReport, getPendingReports,
   resolveReport, banUser, unbanUser, getBannedUsers, isUserBanned, resolveReportsForUser,
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
-  checkUserAchievement, setSelectedAvatar, getMonthlyStats, getAdminNews, createAdminNews
+  checkUserAchievement, setSelectedAvatar
 };
