@@ -47,6 +47,28 @@ const TEAM_B_IDS = ['player-2', 'player-4'];
 const NUM_PATHS = 6;
 const BOARD_SIZE = 9;
 const TURN_DURATION_MS = 60000;
+const INFINITE_CHALLENGE_OPPONENTS = [
+    { nameKey: 'player_names.player-2', aiType: 'default' },
+    { nameKey: 'story_dialogue.start_contravox_text', aiType: 'contravox' },
+    { nameKey: 'story_dialogue.start_versatrix_dialogue_text_1', aiType: 'versatrix' },
+    { nameKey: 'story_dialogue.start_reversum_text', aiType: 'reversum' },
+    { nameKey: 'story_dialogue.final_confrontation_1_text', aiType: 'necroverso_final' },
+    { nameKey: 'ai_dialogue.narrador_winning_1', aiType: 'narrador' },
+    { nameKey: 'story_dialogue.xael_challenge_intro_text', aiType: 'xael' },
+    { nameKey: 'splash.inversus', aiType: 'inversus' },
+    { nameKey: 'event_chars.dark_prophet', aiType: 'oprofetasombrio' },
+    { nameKey: 'event_chars.chaos_cupid', aiType: 'cupidodocaos' },
+    { nameKey: 'event_chars.fortune_goblin', aiType: 'goblindafortuna' },
+    { nameKey: 'event_chars.golden_dragon', aiType: 'dragaodourado' },
+    { nameKey: 'event_chars.the_specter', aiType: 'oespectro' },
+    { nameKey: 'event_chars.salamander', aiType: 'salamandra' },
+    { nameKey: 'event_chars.captain_shortbeard', aiType: 'capitaobarbacurta' },
+    { nameKey: 'event_chars.lost_astronomer', aiType: 'astronomoperdido' },
+    { nameKey: 'event_chars.mysterious_detective', aiType: 'detetivemisterioso' },
+    { nameKey: 'event_chars.witch_of_rest', aiType: 'abruxadoresto' },
+    { nameKey: 'event_chars.yeti', aiType: 'yeti' },
+    { nameKey: 'event_chars.guardian_of_dawn', aiType: 'guardiaodaaurora' }
+];
 
 // --- MATCHMAKING ---
 const matchmakingQueues = {
@@ -1648,7 +1670,9 @@ io.on('connection', (socket) => {
             await db.updateUserCoins(userId, -entryFee);
             infiniteChallengePot = await db.updateInfiniteChallengePot(entryFee);
     
-            socket.emit('infiniteChallengeStartSuccess');
+            const opponentQueue = shuffle([...INFINITE_CHALLENGE_OPPONENTS]);
+
+            socket.emit('infiniteChallengeStartSuccess', { opponentQueue });
             io.emit('infiniteChallengePotUpdate', { pot: infiniteChallengePot });
     
         } catch (error) {
