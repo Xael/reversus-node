@@ -1671,8 +1671,9 @@ io.on('connection', (socket) => {
             infiniteChallengePot = await db.updateInfiniteChallengePot(entryFee);
     
             const opponentQueue = shuffle([...INFINITE_CHALLENGE_OPPONENTS]);
+            const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, userId);
 
-            socket.emit('infiniteChallengeStartSuccess', { opponentQueue });
+            socket.emit('infiniteChallengeStartSuccess', { opponentQueue, updatedProfile });
             io.emit('infiniteChallengePotUpdate', { pot: infiniteChallengePot });
     
         } catch (error) {
