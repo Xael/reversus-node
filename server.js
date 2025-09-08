@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const { OAuth2Client } = require('google-auth-library');
+const crypto = require('crypto');
 const db = require('./db.js');
 
 const app = express();
@@ -157,6 +158,7 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
     } 
     // Handle global Reversus Total
     else if (originalCardName === 'Reversus Total' && options.isGlobal) {
+        gameState.log.unshift({ type: 'system', message: `${casterName} usou o Reversus Total Globalmente, invertendo todos os efeitos!` });
         gameState.reversusTotalActive = true;
         Object.values(gameState.players).forEach(p => {
             if (p.effects.score && !p.playedCards.effect.some(c => c.isLocked && ['Mais', 'Menos'].includes(c.lockedEffect))) {
@@ -560,6 +562,11 @@ async function calculateScoresAndEndRound(room) {
         }
     });
 
+    // Broadcast state so clients see pawn landings before field effects are processed
+    broadcastGameState(room.id);
+    await new Promise(resolve => setTimeout(resolve, 1500)); // Short delay for visual feedback
+    if (!rooms[room.id]) return; // Check if room still exists after delay
+
     if (await checkGameEnd(room, 'score')) return;
 
     if (winners.length > 0) {
@@ -708,6 +715,14 @@ function broadcastGameState(roomId) {
 
 io.on('connection', (socket) => {
     console.log(`Jogador conectado: ${socket.id}`);
+    try {
+        const ip = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
+        const ipHash = crypto.createHash('sha256').update(ip).digest('hex');
+        db.logUniqueVisitor(ipHash).catch(console.error);
+    } catch(e) {
+        console.error("Error logging visitor:", e);
+    }
+
     db.ensureSchema().catch(console.error);
 
     socket.on('google-login', async ({ token }) => {
@@ -1531,7 +1546,10 @@ io.on('connection', (socket) => {
             }));
             const banned = await db.getBannedUsers();
             const pendingReports = await db.getPendingReports();
-            socket.emit('adminData', { online, banned, pendingReports });
+            const totalConnections = io.sockets.sockets.size;
+            const dailyStats = await db.getDailyAccessStats();
+
+            socket.emit('adminData', { online, banned, pendingReports, totalConnections, dailyStats });
         } catch (error) {
             console.error("Admin GetData Error:", error);
         }

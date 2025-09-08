@@ -80,6 +80,7 @@ const AVATAR_CATALOG = {
     'luan': { name: 'Luan', image_url: 'luan.png', cost: 2000, unlock: null },
     'lorenzo': { name: 'Lorenzo', image_url: 'lorenzo.png', cost: 2000, unlock: null },
     'rodrigo': { name: 'Rodrigo', image_url: 'rodrigo.png', cost: 2000, unlock: null },
+    'karol': { name: 'Avatar Karol', image_url: 'karol.png', cost: 2000, unlock: null },
     'necroverso': { name: 'Necroverso', image_url: 'necroverso.png', cost: 15000, unlock: 'tutorial_win' },
     'contravox': { name: 'Contravox', image_url: 'contravox.png', cost: 20000, unlock: 'contravox_win' },
     'versatrix': { name: 'Versatrix', image_url: 'versatrix.png', cost: 25000, unlock: 'versatrix_win' },
@@ -90,6 +91,17 @@ const AVATAR_CATALOG = {
 function levelFromXp(xp) {
   if (!xp || xp < 100) return 1;
   return Math.floor(1 + Math.sqrt(xp / 100));
+}
+
+// Helper function to grant titles, used by updateUserRankAndTitles
+async function grantTitleByCode(userId, code, client = pool) {
+    const titleRes = await client.query('SELECT id FROM titles WHERE code = $1', [code]);
+    if (titleRes.rows.length > 0) {
+        await client.query(
+            'INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [userId, titleRes.rows[0].id]
+        );
+    }
 }
 
 // --- CRIAÇÃO DO ESQUEMA DO BANCO ---
@@ -221,6 +233,12 @@ async function ensureSchema() {
         PRIMARY KEY (user_id, avatar_code)
       );
 
+      CREATE TABLE IF NOT EXISTS daily_unique_visitors (
+        access_date DATE NOT NULL,
+        ip_hash TEXT NOT NULL,
+        PRIMARY KEY (access_date, ip_hash)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
     `;
     await client.query(sql);
@@ -263,6 +281,25 @@ async function ensureSchema() {
 }
 
 // --- API DO BANCO DE DADOS ---
+async function logUniqueVisitor(ipHash) {
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    await pool.query(
+        'INSERT INTO daily_unique_visitors (access_date, ip_hash) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [today, ipHash]
+    );
+}
+
+async function getDailyAccessStats() {
+    const { rows } = await pool.query(`
+        SELECT access_date, COUNT(ip_hash) as unique_users
+        FROM daily_unique_visitors
+        WHERE access_date >= current_date - interval '30' day
+        GROUP BY access_date
+        ORDER BY access_date DESC
+    `);
+    return rows;
+}
+
 async function isUserBanned(userId) {
     const { rows } = await pool.query('SELECT 1 FROM banned_users WHERE user_id = $1', [userId]);
     return rows.length > 0;
@@ -504,7 +541,7 @@ async function removeFriend(userId1, userId2) {
 
 async function getFriendsList(userId) {
     const { rows } = await pool.query(
-        `SELECT u.id, u.google_id, u.username, u.selected_title_code, a.image_url as avatar_url
+        `SELECT u.id, u.google_id, u.username, u.selected_title_code, COALESCE(a.image_url, u.avatar_url) as avatar_url
          FROM friends f
          JOIN users u ON u.id = CASE WHEN f.user_one_id = $1 THEN f.user_two_id ELSE f.user_one_id END
          LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
@@ -796,5 +833,5 @@ module.exports = {
   getPrivateMessageHistory, getUserProfile, claimDailyReward, createPlayerReport, getPendingReports,
   resolveReport, banUser, unbanUser, getBannedUsers, isUserBanned, resolveReportsForUser,
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
-  checkUserAchievement, setSelectedAvatar
+  checkUserAchievement, setSelectedAvatar, logUniqueVisitor, getDailyAccessStats
 };
