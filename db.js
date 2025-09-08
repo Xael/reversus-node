@@ -244,6 +244,7 @@ async function ensureSchema() {
         id INT PRIMARY KEY DEFAULT 1,
         pot_value INT NOT NULL DEFAULT 10000
       );
+      INSERT INTO infinite_challenge_pot (id, pot_value) VALUES (1, 10000) ON CONFLICT(id) DO NOTHING;
 
       CREATE TABLE IF NOT EXISTS infinite_challenge_ranking (
         user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -845,7 +846,7 @@ async function purchaseAvatar(userId, avatarCode) {
 async function getInfiniteChallengePot() {
     const { rows } = await pool.query('SELECT pot_value FROM infinite_challenge_pot WHERE id = 1');
     if (rows.length === 0) {
-        await pool.query('INSERT INTO infinite_challenge_pot (id, pot_value) VALUES (1, 10000)');
+        await pool.query('INSERT INTO infinite_challenge_pot (id, pot_value) VALUES (1, 10000) ON CONFLICT DO NOTHING');
         return 10000;
     }
     return rows[0].pot_value;
@@ -913,5 +914,5 @@ module.exports = {
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
   checkUserAchievement, setSelectedAvatar, logUniqueVisitor, getDailyAccessStats,
   getInfiniteChallengePot, updateInfiniteChallengePot, resetInfiniteChallengePot, upsertInfiniteChallengeResult,
-  getInfiniteRanking
+  getInfiniteRanking, grantTitleByCode
 };
