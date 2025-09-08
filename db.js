@@ -853,11 +853,13 @@ async function getInfiniteChallengePot() {
 }
 
 async function updateInfiniteChallengePot(amountChange) {
-    await pool.query('UPDATE infinite_challenge_pot SET pot_value = pot_value + $1 WHERE id = 1', [amountChange]);
+    const { rows } = await pool.query('UPDATE infinite_challenge_pot SET pot_value = pot_value + $1 WHERE id = 1 RETURNING pot_value', [amountChange]);
+    return rows[0].pot_value;
 }
 
 async function resetInfiniteChallengePot() {
     await pool.query('UPDATE infinite_challenge_pot SET pot_value = 10000 WHERE id = 1');
+    return 10000;
 }
 
 async function upsertInfiniteChallengeResult(userId, level, time) {

@@ -1626,6 +1626,60 @@ io.on('connection', (socket) => {
             console.error("Admin Unban Error:", error);
         }
     });
+    // --- Infinite Challenge Handlers ---
+    socket.on('getInfiniteChallengePot', (callback) => {
+        if (typeof callback === 'function') {
+            callback(infiniteChallengePot);
+        }
+    });
+    
+    socket.on('startInfiniteChallenge', async () => {
+        if (!socket.data.userProfile) {
+            return socket.emit('infiniteChallengeStartError', { message: 'Usuário não autenticado.' });
+        }
+        try {
+            const userId = socket.data.userProfile.id;
+            const user = await db.getUserProfile(socket.data.userProfile.google_id, userId);
+            const entryFee = 10;
+            if (user.coinversus < entryFee) {
+                return socket.emit('infiniteChallengeStartError', { message: 'CoinVersus insuficiente.' });
+            }
+    
+            await db.updateUserCoins(userId, -entryFee);
+            infiniteChallengePot = await db.updateInfiniteChallengePot(entryFee);
+    
+            socket.emit('infiniteChallengeStartSuccess');
+            io.emit('infiniteChallengePotUpdate', { pot: infiniteChallengePot });
+    
+        } catch (error) {
+            console.error("Start Infinite Challenge Error:", error);
+            socket.emit('infiniteChallengeStartError', { message: 'Erro ao iniciar o desafio.' });
+        }
+    });
+
+    socket.on('submitInfiniteResult', async ({ level, time, didWin }) => {
+        if (!socket.data.userProfile) return;
+        try {
+            const userId = socket.data.userProfile.id;
+            await db.upsertInfiniteChallengeResult(userId, level, time);
+    
+            if (didWin) {
+                const finalPot = infiniteChallengePot;
+                await db.updateUserCoins(userId, finalPot);
+                await db.grantTitleByCode(userId, 'eternal_reversus');
+    
+                infiniteChallengePot = await db.resetInfiniteChallengePot();
+                
+                socket.emit('infiniteChallengeWin', { potWon: finalPot });
+                io.emit('infiniteChallengePotUpdate', { pot: infiniteChallengePot });
+            }
+    
+        } catch (error) {
+            console.error("Submit Infinite Result Error:", error);
+        }
+    });
+
+
 });
 
 // --- Matchmaking Logic ---
