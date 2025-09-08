@@ -1673,7 +1673,11 @@ io.on('connection', (socket) => {
             const opponentQueue = shuffle([...INFINITE_CHALLENGE_OPPONENTS]);
             const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, userId);
 
-            socket.emit('infiniteChallengeStartSuccess', { opponentQueue, updatedProfile });
+            // Sanitize payload to prevent serialization issues with complex objects from DB
+            let payload = { opponentQueue, updatedProfile };
+            payload = JSON.parse(JSON.stringify(payload));
+
+            socket.emit('infiniteChallengeStartSuccess', payload);
             io.emit('infiniteChallengePotUpdate', { pot: infiniteChallengePot });
     
         } catch (error) {
