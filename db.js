@@ -48,6 +48,7 @@ const TITLES = {
     'pvp_rank_81_90': { name: 'Aspirante do PVP', line: 'Ranking PvP', unlocks: { rank: 90 } },
     'pvp_rank_91_100': { name: 'Entre os 100 melhores no PVP!', line: 'Ranking PvP', unlocks: { rank: 100 } },
     'creator': { name: 'Criador', line: 'Especial' }, // Título especial
+    'eternal_reversus': { name: 'ETERNAMENTE REVERSUS', line: 'Desafio' },
 
     // Títulos de Evento
     'event_jan': { name: 'O Visionário', line: 'Evento' },
@@ -238,6 +239,19 @@ async function ensureSchema() {
         ip_hash TEXT NOT NULL,
         PRIMARY KEY (access_date, ip_hash)
       );
+
+      CREATE TABLE IF NOT EXISTS infinite_challenge_pot (
+        id INT PRIMARY KEY DEFAULT 1,
+        pot_value INT NOT NULL DEFAULT 10000
+      );
+
+      CREATE TABLE IF NOT EXISTS infinite_challenge_ranking (
+        user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        highest_level INT NOT NULL,
+        time_seconds INT NOT NULL,
+        achieved_at TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_infinite_ranking ON infinite_challenge_ranking (highest_level DESC, time_seconds ASC);
 
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
     `;
@@ -826,6 +840,70 @@ async function purchaseAvatar(userId, avatarCode) {
     }
 }
 
+// --- Infinite Challenge DB Functions ---
+
+async function getInfiniteChallengePot() {
+    const { rows } = await pool.query('SELECT pot_value FROM infinite_challenge_pot WHERE id = 1');
+    if (rows.length === 0) {
+        await pool.query('INSERT INTO infinite_challenge_pot (id, pot_value) VALUES (1, 10000)');
+        return 10000;
+    }
+    return rows[0].pot_value;
+}
+
+async function updateInfiniteChallengePot(amountChange) {
+    await pool.query('UPDATE infinite_challenge_pot SET pot_value = pot_value + $1 WHERE id = 1', [amountChange]);
+}
+
+async function resetInfiniteChallengePot() {
+    await pool.query('UPDATE infinite_challenge_pot SET pot_value = 10000 WHERE id = 1');
+}
+
+async function upsertInfiniteChallengeResult(userId, level, time) {
+    await pool.query(`
+        INSERT INTO infinite_challenge_ranking (user_id, highest_level, time_seconds)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id) DO UPDATE SET
+            highest_level = EXCLUDED.highest_level,
+            time_seconds = EXCLUDED.time_seconds,
+            achieved_at = now()
+        WHERE
+            EXCLUDED.highest_level > infinite_challenge_ranking.highest_level OR
+            (EXCLUDED.highest_level = infinite_challenge_ranking.highest_level AND EXCLUDED.time_seconds < infinite_challenge_ranking.time_seconds)
+    `, [userId, level, time]);
+}
+
+async function getInfiniteRanking(page = 1, limit = 10) {
+    const totalRes = await pool.query('SELECT COUNT(*) FROM infinite_challenge_ranking');
+    const totalPlayers = parseInt(totalRes.rows[0].count, 10);
+    const totalPages = Math.ceil(totalPlayers / limit);
+
+    const rankingRes = await pool.query(`
+        SELECT
+            r.user_id,
+            r.highest_level,
+            r.time_seconds,
+            u.google_id,
+            u.username,
+            u.selected_title_code,
+            COALESCE(a.image_url, u.avatar_url) as avatar_url
+        FROM infinite_challenge_ranking r
+        JOIN users u ON r.user_id = u.id
+        LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
+        ORDER BY r.highest_level DESC, r.time_seconds ASC
+        LIMIT $1 OFFSET $2
+    `, [limit, (page - 1) * limit]);
+
+    rankingRes.rows.forEach(p => {
+        if (p.avatar_url && !p.avatar_url.startsWith('http')) {
+            p.avatar_url = `./${p.avatar_url}`;
+        }
+    });
+
+    return { players: rankingRes.rows, currentPage: page, totalPages };
+}
+
+
 module.exports = {
   testConnection, ensureSchema, findOrCreateUser, addXp, addMatchToHistory, updateUserRankAndTitles,
   getTopPlayers, searchUsers, getFriendshipStatus, sendFriendRequest, getPendingFriendRequests,
@@ -833,5 +911,7 @@ module.exports = {
   getPrivateMessageHistory, getUserProfile, claimDailyReward, createPlayerReport, getPendingReports,
   resolveReport, banUser, unbanUser, getBannedUsers, isUserBanned, resolveReportsForUser,
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
-  checkUserAchievement, setSelectedAvatar, logUniqueVisitor, getDailyAccessStats
+  checkUserAchievement, setSelectedAvatar, logUniqueVisitor, getDailyAccessStats,
+  getInfiniteChallengePot, updateInfiniteChallengePot, resetInfiniteChallengePot, upsertInfiniteChallengeResult,
+  getInfiniteRanking
 };

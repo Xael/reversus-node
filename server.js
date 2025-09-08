@@ -24,6 +24,9 @@ const rooms = {};
 const onlineUsers = new Map(); // Key: userId (DB id), Value: { socketId, username, avatar_url, google_id }
 const userSockets = new Map(); // Key: socket.id, Value: userId (DB id)
 
+// --- ESTADO GLOBAL DO SERVIDOR ---
+let infiniteChallengePot = null;
+
 // --- LÓGICA DE JOGO ---
 const VALUE_DECK_CONFIG = [{ value: 2, count: 12 }, { value: 4, count: 10 }, { value: 6, count: 8 }, { value: 8, count: 6 }, { value: 10, count: 4 }];
 const EFFECT_DECK_CONFIG = [{ name: 'Mais', count: 4 }, { name: 'Menos', count: 4 }, { name: 'Sobe', count: 4 }, { name: 'Desce', count: 4 }, { name: 'Pula', count: 4 }, { name: 'Reversus', count: 4 }, { name: 'Reversus Total', count: 1 }];
@@ -619,7 +622,7 @@ async function handleTurnTimeout(room) {
     clearTurnTimers(room);
     
     if (room.gameState.turn < 3) {
-        io.to(room.id).emit('matchCancelled', 'Partida anulada por inatividade no início.');
+        io.to(roomId).emit('matchCancelled', 'Partida anulada por inatividade no início.');
         delete rooms[room.id];
         return;
     }
@@ -757,6 +760,7 @@ io.on('connection', (socket) => {
             
             socket.data.userProfile = profileFromDb;
             socket.emit('loginSuccess', profileFromDb);
+            socket.emit('infiniteChallengePotUpdate', { pot: infiniteChallengePot });
 
             const friends = await db.getFriendsList(userProfile.id);
             friends.forEach(friend => {
@@ -786,7 +790,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('claimChallengeReward', async ({ challengeId, amount }) => {
+    socket.on('claimChallengeReward', async ({ challengeId, amount, titleCode }) => {
         if (!socket.data.userProfile || !challengeId || !amount || typeof amount !== 'number' || amount <= 0) {
             return;
         }
@@ -797,7 +801,10 @@ io.on('connection', (socket) => {
             if (!hasClaimed) {
                 await db.claimChallengeReward(userId, challengeId);
                 await db.updateUserCoins(userId, amount);
-                socket.emit('challengeRewardSuccess', { amount });
+                if (titleCode) {
+                    await db.grantTitleByCode(userId, titleCode);
+                }
+                socket.emit('challengeRewardSuccess', { amount, titleCode });
                 const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, userId);
                 socket.emit('profileData', updatedProfile);
             }
@@ -1441,6 +1448,62 @@ io.on('connection', (socket) => {
             }
         }
     });
+    
+    // --- Infinite Challenge Handlers ---
+    socket.on('getInfiniteChallengePot', () => {
+        if (infiniteChallengePot !== null) {
+            socket.emit('infiniteChallengePotUpdate', { pot: infiniteChallengePot });
+        }
+    });
+
+    socket.on('startInfiniteChallenge', async () => {
+        if (!socket.data.userProfile) {
+            return socket.emit('error', 'Você precisa estar logado para iniciar o desafio.');
+        }
+        try {
+            const profile = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
+            if (profile.coinversus < 10) {
+                return socket.emit('insufficientFunds');
+            }
+
+            await db.updateUserCoins(profile.id, -10);
+            await db.updateInfiniteChallengePot(10);
+            infiniteChallengePot += 10;
+            io.emit('infiniteChallengePotUpdate', { pot: infiniteChallengePot });
+            
+            // The server doesn't need to create the game state, it's a single-player mode.
+            // We just authorize the start.
+            socket.emit('infiniteChallengeStarted');
+        } catch (error) {
+            console.error('Error starting infinite challenge:', error);
+            socket.emit('error', 'Não foi possível iniciar o desafio.');
+        }
+    });
+
+    socket.on('submitInfiniteResult', async ({ level, time, won }) => {
+        if (!socket.data.userProfile) return;
+        try {
+            const userId = socket.data.userProfile.id;
+            await db.upsertInfiniteChallengeResult(userId, level, time);
+            
+            if (won) {
+                const pot = await db.getInfiniteChallengePot();
+                await db.updateUserCoins(userId, pot);
+                await db.resetInfiniteChallengePot();
+                infiniteChallengePot = 10000;
+                io.emit('infiniteChallengePotUpdate', { pot: infiniteChallengePot });
+                
+                const challengeId = 'infinite_challenge_win';
+                await db.grantUserAchievement(userId, challengeId);
+                await db.claimChallengeReward(userId, challengeId);
+                await db.grantTitleByCode(userId, 'eternal_reversus');
+                
+                socket.emit('challengeRewardSuccess', { amount: pot, titleCode: 'eternal_reversus' });
+            }
+        } catch (error) {
+            console.error('Error submitting infinite result:', error);
+        }
+    });
 
     // --- Invite Handlers ---
     socket.on('getOnlineFriends', async () => {
@@ -1737,10 +1800,12 @@ async function checkAndStartMatch(mode) {
 
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
     console.log(`--- SERVIDOR DE JOGO REVERSUS ONLINE ---`);
     console.log(`O servidor está rodando e escutando na porta: ${PORT}`);
     console.log(`Aguardando conexões de jogadores...`);
     console.log('------------------------------------');
-    db.testConnection();
+    await db.testConnection();
+    infiniteChallengePot = await db.getInfiniteChallengePot();
+    console.log(`Pote do Desafio Infinito carregado: ${infiniteChallengePot}`);
 });
