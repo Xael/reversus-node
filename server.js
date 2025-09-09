@@ -47,6 +47,38 @@ const TEAM_B_IDS = ['player-2', 'player-4'];
 const NUM_PATHS = 6;
 const BOARD_SIZE = 9;
 const TURN_DURATION_MS = 60000;
+
+// Data structures copied from client's js/core/config.js to ensure consistency for opponent queue
+const MONTHLY_EVENTS_FOR_QUEUE = [
+    { characterNameKey: 'event_chars.dark_prophet', ai: 'oprofetasombrio' },
+    { characterNameKey: 'event_chars.chaos_cupid', ai: 'cupidodocaos' },
+    { characterNameKey: 'event_chars.fortune_goblin', ai: 'goblindafortuna' },
+    { characterNameKey: 'event_chars.golden_dragon', ai: 'dragaodourado' },
+    { characterNameKey: 'event_chars.the_specter', ai: 'oespectro' },
+    { characterNameKey: 'event_chars.salamander', ai: 'salamandra' },
+    { characterNameKey: 'event_chars.captain_shortbeard', ai: 'capitaobarbacurta' },
+    { characterNameKey: 'event_chars.lost_astronomer', ai: 'astronomoperdido' },
+    { characterNameKey: 'event_chars.mysterious_detective', ai: 'detetivemisterioso' },
+    { characterNameKey: 'event_chars.witch_of_rest', ai: 'abruxadoresto' },
+    { characterNameKey: 'event_chars.yeti', ai: 'yeti' },
+    { characterNameKey: 'event_chars.guardian_of_dawn', ai: 'guardiaodaaurora' }
+];
+
+const AVATAR_CATALOG_FOR_QUEUE = {
+    'graxa': { nameKey: 'avatars.graxa' },
+    'jujuba': { nameKey: 'avatars.jujuba' },
+    'frank': { nameKey: 'avatars.frank' },
+    'lele': { nameKey: 'avatars.lele' },
+    'vini': { nameKey: 'avatars.vini' },
+    'vini2': { nameKey: 'avatars.vini2' },
+    'nathan': { nameKey: 'avatars.nathan' },
+    'pao': { nameKey: 'avatars.pao' },
+    'luan': { nameKey: 'avatars.luan' },
+    'lorenzo': { nameKey: 'avatars.lorenzo' },
+    'rodrigo': { nameKey: 'avatars.rodrigo' },
+    'karol': { nameKey: 'avatars.karol' },
+};
+
 const INFINITE_CHALLENGE_OPPONENTS = [
     { nameKey: 'player_names.player-2', aiType: 'default' },
     { nameKey: 'story_dialogue.start_contravox_text', aiType: 'contravox' },
@@ -56,19 +88,11 @@ const INFINITE_CHALLENGE_OPPONENTS = [
     { nameKey: 'ai_dialogue.narrador_winning_1', aiType: 'narrador' },
     { nameKey: 'story_dialogue.xael_challenge_intro_text', aiType: 'xael' },
     { nameKey: 'splash.inversus', aiType: 'inversus' },
-    { nameKey: 'event_chars.dark_prophet', aiType: 'oprofetasombrio' },
-    { nameKey: 'event_chars.chaos_cupid', aiType: 'cupidodocaos' },
-    { nameKey: 'event_chars.fortune_goblin', aiType: 'goblindafortuna' },
-    { nameKey: 'event_chars.golden_dragon', aiType: 'dragaodourado' },
-    { nameKey: 'event_chars.the_specter', aiType: 'oespectro' },
-    { nameKey: 'event_chars.salamander', aiType: 'salamandra' },
-    { nameKey: 'event_chars.captain_shortbeard', aiType: 'capitaobarbacurta' },
-    { nameKey: 'event_chars.lost_astronomer', aiType: 'astronomoperdido' },
-    { nameKey: 'event_chars.mysterious_detective', aiType: 'detetivemisterioso' },
-    { nameKey: 'event_chars.witch_of_rest', aiType: 'abruxadoresto' },
-    { nameKey: 'event_chars.yeti', aiType: 'yeti' },
-    { nameKey: 'event_chars.guardian_of_dawn', aiType: 'guardiaodaaurora' }
+    ...MONTHLY_EVENTS_FOR_QUEUE.map(event => ({ nameKey: event.characterNameKey, aiType: event.ai })),
+    ...Object.entries(AVATAR_CATALOG_FOR_QUEUE)
+        .map(([key, avatar]) => ({ nameKey: avatar.nameKey, aiType: 'default' }))
 ];
+
 
 // --- MATCHMAKING ---
 const matchmakingQueues = {
