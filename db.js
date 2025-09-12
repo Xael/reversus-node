@@ -266,10 +266,16 @@ async function ensureSchema() {
         );
     }
 
-    // Semeia a tabela de avatares
+    // Semeia a tabela de avatares com lógica de atualização para garantir consistência
     for (const [code, data] of Object.entries(AVATAR_CATALOG)) {
         await client.query(
-            `INSERT INTO avatars (code, name, image_url, cost, unlock_achievement_code) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (code) DO NOTHING`,
+            `INSERT INTO avatars (code, name, image_url, cost, unlock_achievement_code) 
+             VALUES ($1, $2, $3, $4, $5) 
+             ON CONFLICT (code) DO UPDATE SET
+                name = EXCLUDED.name,
+                image_url = EXCLUDED.image_url,
+                cost = EXCLUDED.cost,
+                unlock_achievement_code = EXCLUDED.unlock_achievement_code;`,
             [code, data.name, data.image_url, data.cost, data.unlock]
         );
     }
