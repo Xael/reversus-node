@@ -66,26 +66,26 @@ const TITLES = {
 };
 
 const AVATAR_CATALOG = {
-    'default_1': { name: 'Avatar 1', image_url: 'aleatorio1.png', cost: 1000, unlock: null },
-    'default_2': { name: 'Avatar 2', image_url: 'aleatorio2.png', cost: 1000, unlock: null },
-    'default_3': { name: 'Avatar 3', image_url: 'aleatorio3.png', cost: 1000, unlock: null },
-    'default_4': { name: 'Avatar 4', image_url: 'aleatorio4.png', cost: 1000, unlock: null },
-    'graxa': { name: 'Graxa', image_url: 'graxa.png', cost: 2000, unlock: null },
-    'jujuba': { name: 'Jujuba', image_url: 'jujuba.png', cost: 2000, unlock: null },
-    'frank': { name: 'Frank', image_url: 'frank.png', cost: 2000, unlock: null },
-    'lele': { name: 'Lelê', image_url: 'lele.png', cost: 2000, unlock: null },
-    'vini': { name: 'Vini', image_url: 'vini.png', cost: 2000, unlock: null },
-    'vini2': { name: 'Vini2', image_url: 'vini2.png', cost: 2000, unlock: null },
-    'nathan': { name: 'Nathan', image_url: 'nathan.png', cost: 2000, unlock: null },
-    'pao': { name: 'Pão', image_url: 'pao.png', cost: 2000, unlock: null },
-    'luan': { name: 'Luan', image_url: 'luan.png', cost: 2000, unlock: null },
-    'lorenzo': { name: 'Lorenzo', image_url: 'lorenzo.png', cost: 2000, unlock: null },
-    'rodrigo': { name: 'Rodrigo', image_url: 'rodrigo.png', cost: 2000, unlock: null },
-    'karol': { name: 'Avatar Karol', image_url: 'karol.png', cost: 2000, unlock: null },
-    'necroverso': { name: 'Necroverso', image_url: 'necroverso.png', cost: 15000, unlock: 'tutorial_win' },
-    'contravox': { name: 'Contravox', image_url: 'contravox.png', cost: 20000, unlock: 'contravox_win' },
-    'versatrix': { name: 'Versatrix', image_url: 'versatrix.png', cost: 25000, unlock: 'versatrix_win' },
-    'reversum': { name: 'Rei Reversum', image_url: 'reversum.png', cost: 30000, unlock: 'reversum_win' }
+    'default_1': { name: 'Avatar 1', image_url: 'aleatorio1.png', cost: 1000, unlock_achievement_code: null },
+    'default_2': { name: 'Avatar 2', image_url: 'aleatorio2.png', cost: 1000, unlock_achievement_code: null },
+    'default_3': { name: 'Avatar 3', image_url: 'aleatorio3.png', cost: 1000, unlock_achievement_code: null },
+    'default_4': { name: 'Avatar 4', image_url: 'aleatorio4.png', cost: 1000, unlock_achievement_code: null },
+    'graxa': { name: 'Graxa', image_url: 'graxa.png', cost: 2000, unlock_achievement_code: null },
+    'jujuba': { name: 'Jujuba', image_url: 'jujuba.png', cost: 2000, unlock_achievement_code: null },
+    'frank': { name: 'Frank', image_url: 'frank.png', cost: 2000, unlock_achievement_code: null },
+    'lele': { name: 'Lelê', image_url: 'lele.png', cost: 2000, unlock_achievement_code: null },
+    'vini': { name: 'Vini', image_url: 'vini.png', cost: 2000, unlock_achievement_code: null },
+    'vini2': { name: 'Vini2', image_url: 'vini2.png', cost: 2000, unlock_achievement_code: null },
+    'nathan': { name: 'Nathan', image_url: 'nathan.png', cost: 2000, unlock_achievement_code: null },
+    'pao': { name: 'Pão', image_url: 'pao.png', cost: 2000, unlock_achievement_code: null },
+    'luan': { name: 'Luan', image_url: 'luan.png', cost: 2000, unlock_achievement_code: null },
+    'lorenzo': { name: 'Lorenzo', image_url: 'lorenzo.png', cost: 2000, unlock_achievement_code: null },
+    'rodrigo': { name: 'Rodrigo', image_url: 'rodrigo.png', cost: 2000, unlock_achievement_code: null },
+    'karol': { name: 'Avatar Karol', image_url: 'karol.png', cost: 2000, unlock_achievement_code: null },
+    'necroverso': { name: 'Necroverso', image_url: 'necroverso.png', cost: 15000, unlock_achievement_code: 'tutorial_win' },
+    'contravox': { name: 'Contravox', image_url: 'contravox.png', cost: 20000, unlock_achievement_code: 'contravox_win' },
+    'versatrix': { name: 'Versatrix', image_url: 'versatrix.png', cost: 25000, unlock_achievement_code: 'versatrix_win' },
+    'reversum': { name: 'Rei Reversum', image_url: 'reversum.png', cost: 30000, unlock_achievement_code: 'reversum_win' }
 };
 
 // --- HELPERS ---
@@ -276,7 +276,7 @@ async function ensureSchema() {
                 image_url = EXCLUDED.image_url,
                 cost = EXCLUDED.cost,
                 unlock_achievement_code = EXCLUDED.unlock_achievement_code;`,
-            [code, data.name, data.image_url, data.cost, data.unlock]
+            [code, data.name, data.image_url, data.cost, data.unlock_achievement_code]
         );
     }
     
