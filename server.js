@@ -1600,19 +1600,23 @@ io.on('connection', (socket) => {
 
 
     // --- Admin Handlers ---
+    async function getFullAdminData() {
+        const online = Array.from(onlineUsers.values()).map(u => ({
+            id: userSockets.get(u.socketId),
+            ...u
+        }));
+        const banned = await db.getBannedUsers();
+        const pendingReports = await db.getPendingReports();
+        const totalConnections = io.sockets.sockets.size;
+        const dailyStats = await db.getDailyAccessStats();
+        return { online, banned, pendingReports, totalConnections, dailyStats };
+    }
+
     socket.on('admin:getData', async () => {
         if (!socket.data.userProfile?.isAdmin) return;
         try {
-            const online = Array.from(onlineUsers.values()).map(u => ({
-                id: userSockets.get(u.socketId), // Get DB ID
-                ...u
-            }));
-            const banned = await db.getBannedUsers();
-            const pendingReports = await db.getPendingReports();
-            const totalConnections = io.sockets.sockets.size;
-            const dailyStats = await db.getDailyAccessStats();
-
-            socket.emit('adminData', { online, banned, pendingReports, totalConnections, dailyStats });
+            const data = await getFullAdminData();
+            socket.emit('adminData', data);
         } catch (error) {
             console.error("Admin GetData Error:", error);
         }
@@ -1633,7 +1637,12 @@ io.on('connection', (socket) => {
                 }
             }
             console.log(`Admin ${socket.data.userProfile.username} banned user ID ${userId}`);
-            socket.emit('adminActionSuccess');
+            
+            setTimeout(async () => {
+                const data = await getFullAdminData();
+                socket.emit('adminData', data);
+            }, 200);
+
         } catch (error) {
             console.error("Admin Ban Error:", error);
             socket.emit('error', 'Falha ao banir o usuário.');
@@ -1644,11 +1653,8 @@ io.on('connection', (socket) => {
         if (!socket.data.userProfile?.isAdmin) return;
         try {
             await db.resolveReport(reportId, socket.data.userProfile.id);
-            // Re-busca e envia os dados para o admin que agiu
-            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
-            const banned = await db.getBannedUsers();
-            const pendingReports = await db.getPendingReports();
-            socket.emit('adminData', { online, banned, pendingReports });
+            const data = await getFullAdminData();
+            socket.emit('adminData', data);
         } catch (error) {
             console.error("Admin Resolve Report Error:", error);
         }
@@ -1660,12 +1666,11 @@ io.on('connection', (socket) => {
         try {
             await db.unbanUser(userId);
             console.log(`Admin ${socket.data.userProfile.username} unbanned user ID ${userId}`);
-            // Refresh admin panel
-            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
-            const banned = await db.getBannedUsers();
-            socket.emit('adminData', { online, banned });
+            const data = await getFullAdminData();
+            socket.emit('adminData', data);
         } catch (error) {
             console.error("Admin Unban Error:", error);
+            socket.emit('error', 'Falha ao desbanir o usuário.');
         }
     });
 
@@ -1682,7 +1687,10 @@ io.on('connection', (socket) => {
                 }
             }
             console.log(`Admin ${socket.data.userProfile.username} rolled back user ID ${userId}`);
-            socket.emit('adminActionSuccess');
+            setTimeout(async () => {
+                const data = await getFullAdminData();
+                socket.emit('adminData', data);
+            }, 200);
         } catch (error) {
             console.error("Admin Rollback Error:", error);
             socket.emit('error', 'Falha ao redefinir a conta do usuário.');
@@ -1814,7 +1822,7 @@ async function checkAndStartMatch(mode) {
             room.players.forEach(p => { drawnCards[p.playerId] = tempDeck.pop(); });
             drawResults = drawnCards;
             const sortedPlayers = [...room.players].sort((a,b) => drawnCards[b.playerId].value - drawnCards[a.playerId].value);
-            if (sortedPlayers.length < 2 || drawnCards[sortedPlayers[0].playerId].value > drawnCards[sortedPlayers[1].playerId].value) {
+            if (sortedPlayers.length < 2 || drawnCards[sortedPlayers[0].playerId].value > drawnCards[a.playerId].value) {
                 tie = false;
                 startingPlayerId = sortedPlayers[0].playerId;
             }
