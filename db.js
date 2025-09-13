@@ -912,6 +912,41 @@ async function getInfiniteRanking(page = 1, limit = 10) {
     return { players: rankingRes.rows, currentPage: page, totalPages };
 }
 
+async function rollbackUser(userId) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1. Reset core stats, keep username, avatar, google_id etc.
+        await client.query(
+            `UPDATE users 
+             SET xp = 0, level = 1, victories = 0, defeats = 0, coinversus = 100, 
+                 last_daily_reward_claimed_at = NULL, selected_title_code = NULL, 
+                 highest_rank_achieved = NULL, equipped_avatar_code = NULL
+             WHERE id = $1`,
+            [userId]
+        );
+
+        // 2. Delete related data from other tables
+        await client.query(`DELETE FROM user_match_history WHERE user_id = $1`, [userId]);
+        await client.query(`DELETE FROM user_titles WHERE user_id = $1`, [userId]);
+        await client.query(`DELETE FROM user_achievements WHERE user_id = $1`, [userId]);
+        await client.query(`DELETE FROM user_avatars WHERE user_id = $1`, [userId]);
+        await client.query(`DELETE FROM friends WHERE user_one_id = $1 OR user_two_id = $1`, [userId]);
+        await client.query(`DELETE FROM friend_requests WHERE sender_id = $1 OR receiver_id = $1`, [userId]);
+        await client.query(`DELETE FROM infinite_challenge_ranking WHERE user_id = $1`, [userId]);
+        
+        await client.query('COMMIT');
+        return { success: true };
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error(`Error rolling back user ${userId}:`, error);
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
 
 module.exports = {
   testConnection, ensureSchema, findOrCreateUser, addXp, addMatchToHistory, updateUserRankAndTitles,
@@ -922,5 +957,5 @@ module.exports = {
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
   checkUserAchievement, setSelectedAvatar, logUniqueVisitor, getDailyAccessStats,
   getInfiniteChallengePot, updateInfiniteChallengePot, resetInfiniteChallengePot, upsertInfiniteChallengeResult,
-  getInfiniteRanking, grantTitleByCode
+  getInfiniteRanking, grantTitleByCode, rollbackUser
 };

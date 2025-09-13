@@ -81,13 +81,13 @@ const AVATAR_CATALOG_FOR_QUEUE = {
 
 const INFINITE_CHALLENGE_OPPONENTS = [
     { nameKey: 'player_names.player-2', aiType: 'default', avatar_url: 'aleatorio1.png' },
-    { nameKey: 'avatars.contravox', aiType: 'contravox', avatar_url: 'contravox.png' },
-    { nameKey: 'avatars.versatrix', aiType: 'versatrix', avatar_url: 'versatrix.png' },
-    { nameKey: 'avatars.reversum', aiType: 'reversum', avatar_url: 'reversum.png' },
+    { nameKey: 'player_names.contravox', aiType: 'contravox', avatar_url: 'contravox.png' },
+    { nameKey: 'player_names.versatrix', aiType: 'versatrix', avatar_url: 'versatrix.png' },
+    { nameKey: 'player_names.reversum', aiType: 'reversum', avatar_url: 'reversum.png' },
     { nameKey: 'player_names.necroverso_final', aiType: 'necroverso_final', avatar_url: 'necroverso2.png' },
     { nameKey: 'player_names.narrador', aiType: 'narrador', avatar_url: 'narrador.png' },
     { nameKey: 'player_names.xael', aiType: 'xael', avatar_url: 'xaeldesafio.png' },
-    { nameKey: 'splash.inversus', aiType: 'inversus', avatar_url: 'inversum1.png' },
+    { nameKey: 'player_names.inversus', aiType: 'inversus', avatar_url: 'inversum1.png' },
     ...MONTHLY_EVENTS_FOR_QUEUE.map(event => ({ nameKey: event.characterNameKey, aiType: event.ai, avatar_url: event.image })),
     ...Object.entries(AVATAR_CATALOG_FOR_QUEUE)
         .map(([key, avatar]) => ({ nameKey: `avatars.${key}`, aiType: 'default', avatar_url: avatar.image_url }))
@@ -896,7 +896,7 @@ io.on('connection', (socket) => {
         try {
             const userId = socket.data.userProfile.id;
             await db.setSelectedAvatar(userId, avatarCode);
-            const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, userId);
+            const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
             socket.data.userProfile = updatedProfile;
             socket.emit('profileData', updatedProfile);
         } catch (error) {
@@ -1623,8 +1623,7 @@ io.on('connection', (socket) => {
         try {
             const adminId = socket.data.userProfile.id;
             await db.banUser({ userId, adminId });
-            await db.resolveReportsForUser(userId, adminId); // Resolve automaticamente as denúncias ao banir
-
+            await db.resolveReportsForUser(userId, adminId);
             const targetSocketData = onlineUsers.get(userId);
             if (targetSocketData) {
                 const targetSocket = io.sockets.sockets.get(targetSocketData.socketId);
@@ -1634,13 +1633,10 @@ io.on('connection', (socket) => {
                 }
             }
             console.log(`Admin ${socket.data.userProfile.username} banned user ID ${userId}`);
-            
-            const online = Array.from(onlineUsers.values()).map(u => ({ id: userSockets.get(u.socketId), ...u }));
-            const banned = await db.getBannedUsers();
-            const pendingReports = await db.getPendingReports();
-            socket.emit('adminData', { online, banned, pendingReports });
+            socket.emit('adminActionSuccess');
         } catch (error) {
             console.error("Admin Ban Error:", error);
+            socket.emit('error', 'Falha ao banir o usuário.');
         }
     });
     
@@ -1670,6 +1666,26 @@ io.on('connection', (socket) => {
             socket.emit('adminData', { online, banned });
         } catch (error) {
             console.error("Admin Unban Error:", error);
+        }
+    });
+
+    socket.on('admin:rollbackUser', async ({ userId }) => {
+        if (!socket.data.userProfile?.isAdmin) return;
+        try {
+            await db.rollbackUser(userId);
+            const targetSocketData = onlineUsers.get(userId);
+            if (targetSocketData) {
+                const targetSocket = io.sockets.sockets.get(targetSocketData.socketId);
+                if (targetSocket) {
+                    targetSocket.emit('forceDisconnect', 'Sua conta foi redefinida por um administrador.');
+                    targetSocket.disconnect();
+                }
+            }
+            console.log(`Admin ${socket.data.userProfile.username} rolled back user ID ${userId}`);
+            socket.emit('adminActionSuccess');
+        } catch (error) {
+            console.error("Admin Rollback Error:", error);
+            socket.emit('error', 'Falha ao redefinir a conta do usuário.');
         }
     });
     // --- Infinite Challenge Handlers ---
