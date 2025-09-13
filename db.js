@@ -944,7 +944,7 @@ async function rollbackUser(userId) {
     } catch (error) {
         await client.query('ROLLBACK');
         console.error(`Error rolling back user ${userId}:`, error);
-        throw error;
+        return { success: false, error: error.message };
     } finally {
         client.release();
     }

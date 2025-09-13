@@ -1675,8 +1675,15 @@ io.on('connection', (socket) => {
 
     socket.on('admin:rollbackUser', async ({ userId }) => {
         if (!socket.data.userProfile?.isAdmin) return;
+        if (socket.data.userProfile.id === userId) {
+            return socket.emit('error', 'Você não pode resetar sua própria conta.');
+        }
         try {
-            await db.rollbackUser(userId);
+            const result = await db.rollbackUser(userId);
+            if (!result.success) {
+                throw new Error(result.error || 'Falha no banco de dados ao resetar a conta.');
+            }
+
             const targetSocketData = onlineUsers.get(userId);
             if (targetSocketData) {
                 const targetSocket = io.sockets.sockets.get(targetSocketData.socketId);
@@ -1684,7 +1691,6 @@ io.on('connection', (socket) => {
                     targetSocket.emit('forceDisconnect', 'Sua conta foi redefinida por um administrador.');
                     targetSocket.disconnect();
                 }
-                 // Disconnect logic will handle removal from onlineUsers
             }
             console.log(`Admin ${socket.data.userProfile.username} rolled back user ID ${userId}`);
             
@@ -1693,7 +1699,7 @@ io.on('connection', (socket) => {
             socket.emit('adminData', data);
         } catch (error) {
             console.error("Admin Rollback Error:", error);
-            socket.emit('error', 'Falha ao redefinir a conta do usuário.');
+            socket.emit('error', `Falha ao resetar a conta do usuário: ${error.message}`);
         }
     });
     // --- Infinite Challenge Handlers ---
