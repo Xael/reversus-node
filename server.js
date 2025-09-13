@@ -1632,8 +1632,7 @@ io.on('connection', (socket) => {
                     targetSocket.emit('forceDisconnect', 'Você foi banido do jogo.');
                     targetSocket.disconnect();
                 }
-                onlineUsers.delete(userId);
-                if (targetSocket) userSockets.delete(targetSocket.id);
+                // Disconnect logic will handle removal from onlineUsers
             }
             console.log(`Admin ${socket.data.userProfile.username} banned user ID ${userId}`);
             
@@ -1685,8 +1684,7 @@ io.on('connection', (socket) => {
                     targetSocket.emit('forceDisconnect', 'Sua conta foi redefinida por um administrador.');
                     targetSocket.disconnect();
                 }
-                onlineUsers.delete(userId);
-                if(targetSocket) userSockets.delete(targetSocket.id);
+                 // Disconnect logic will handle removal from onlineUsers
             }
             console.log(`Admin ${socket.data.userProfile.username} rolled back user ID ${userId}`);
             
