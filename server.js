@@ -1210,12 +1210,9 @@ io.on('connection', (socket) => {
     
             const sortedPlayers = [...room.players].sort((a, b) => drawnCards[b.playerId].value - drawnCards[a.playerId].value);
     
-            if (sortedPlayers.length < 2 || drawnCards[sortedPlayers[0].playerId].value > drawnCards[sortedPlayers[1].playerId].value) {
+            if (sortedPlayers.length < 2 || drawnCards[sortedPlayers[0].playerId].value > drawnCards[a.playerId].value) {
                 tie = false;
                 startingPlayerId = sortedPlayers[0].playerId;
-            } else {
-                 Object.values(drawnCards).forEach(card => valueDeck.push(card)); // Return cards to deck
-                 shuffle(valueDeck);
             }
         }
     
@@ -1635,13 +1632,14 @@ io.on('connection', (socket) => {
                     targetSocket.emit('forceDisconnect', 'Você foi banido do jogo.');
                     targetSocket.disconnect();
                 }
+                onlineUsers.delete(userId);
+                if (targetSocket) userSockets.delete(targetSocket.id);
             }
             console.log(`Admin ${socket.data.userProfile.username} banned user ID ${userId}`);
             
-            setTimeout(async () => {
-                const data = await getFullAdminData();
-                socket.emit('adminData', data);
-            }, 200);
+            socket.emit('adminActionSuccess', 'Usuário banido com sucesso.');
+            const data = await getFullAdminData();
+            socket.emit('adminData', data);
 
         } catch (error) {
             console.error("Admin Ban Error:", error);
@@ -1653,6 +1651,7 @@ io.on('connection', (socket) => {
         if (!socket.data.userProfile?.isAdmin) return;
         try {
             await db.resolveReport(reportId, socket.data.userProfile.id);
+            socket.emit('adminActionSuccess', 'Denúncia resolvida com sucesso.');
             const data = await getFullAdminData();
             socket.emit('adminData', data);
         } catch (error) {
@@ -1666,6 +1665,7 @@ io.on('connection', (socket) => {
         try {
             await db.unbanUser(userId);
             console.log(`Admin ${socket.data.userProfile.username} unbanned user ID ${userId}`);
+            socket.emit('adminActionSuccess', 'Banimento do usuário removido com sucesso.');
             const data = await getFullAdminData();
             socket.emit('adminData', data);
         } catch (error) {
@@ -1685,12 +1685,14 @@ io.on('connection', (socket) => {
                     targetSocket.emit('forceDisconnect', 'Sua conta foi redefinida por um administrador.');
                     targetSocket.disconnect();
                 }
+                onlineUsers.delete(userId);
+                if(targetSocket) userSockets.delete(targetSocket.id);
             }
             console.log(`Admin ${socket.data.userProfile.username} rolled back user ID ${userId}`);
-            setTimeout(async () => {
-                const data = await getFullAdminData();
-                socket.emit('adminData', data);
-            }, 200);
+            
+            socket.emit('adminActionSuccess', 'Conta do usuário resetada com sucesso.');
+            const data = await getFullAdminData();
+            socket.emit('adminData', data);
         } catch (error) {
             console.error("Admin Rollback Error:", error);
             socket.emit('error', 'Falha ao redefinir a conta do usuário.');

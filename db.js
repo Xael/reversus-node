@@ -935,6 +935,9 @@ async function rollbackUser(userId) {
         await client.query(`DELETE FROM friends WHERE user_one_id = $1 OR user_two_id = $1`, [userId]);
         await client.query(`DELETE FROM friend_requests WHERE sender_id = $1 OR receiver_id = $1`, [userId]);
         await client.query(`DELETE FROM infinite_challenge_ranking WHERE user_id = $1`, [userId]);
+        await client.query(`DELETE FROM private_messages WHERE sender_id = $1 OR recipient_id = $1`, [userId]);
+        await client.query(`DELETE FROM player_reports WHERE reporter_id = $1 OR reported_id = $1`, [userId]);
+        await client.query(`DELETE FROM user_challenge_rewards WHERE user_id = $1`, [userId]);
         
         await client.query('COMMIT');
         return { success: true };
