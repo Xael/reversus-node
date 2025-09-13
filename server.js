@@ -50,47 +50,47 @@ const TURN_DURATION_MS = 60000;
 
 // Data structures copied from client's js/core/config.js to ensure consistency for opponent queue
 const MONTHLY_EVENTS_FOR_QUEUE = [
-    { characterNameKey: 'event_chars.dark_prophet', ai: 'oprofetasombrio' },
-    { characterNameKey: 'event_chars.chaos_cupid', ai: 'cupidodocaos' },
-    { characterNameKey: 'event_chars.fortune_goblin', ai: 'goblindafortuna' },
-    { characterNameKey: 'event_chars.golden_dragon', ai: 'dragaodourado' },
-    { characterNameKey: 'event_chars.the_specter', ai: 'oespectro' },
-    { characterNameKey: 'event_chars.salamander', ai: 'salamandra' },
-    { characterNameKey: 'event_chars.captain_shortbeard', ai: 'capitaobarbacurta' },
-    { characterNameKey: 'event_chars.lost_astronomer', ai: 'astronomoperdido' },
-    { characterNameKey: 'event_chars.mysterious_detective', ai: 'detetivemisterioso' },
-    { characterNameKey: 'event_chars.witch_of_rest', ai: 'abruxadoresto' },
-    { characterNameKey: 'event_chars.yeti', ai: 'yeti' },
-    { characterNameKey: 'event_chars.guardian_of_dawn', ai: 'guardiaodaaurora' }
+    { characterNameKey: 'event_chars.dark_prophet', ai: 'oprofetasombrio', image: 'oprofetasombrio.png' },
+    { characterNameKey: 'event_chars.chaos_cupid', ai: 'cupidodocaos', image: 'cupidodocaos.png' },
+    { characterNameKey: 'event_chars.fortune_goblin', ai: 'goblindafortuna', image: 'goblindafortuna.png' },
+    { characterNameKey: 'event_chars.golden_dragon', ai: 'dragaodourado', image: 'dragaodourado.png' },
+    { characterNameKey: 'event_chars.the_specter', ai: 'oespectro', image: 'oespectro.png' },
+    { characterNameKey: 'event_chars.salamander', ai: 'salamandra', image: 'salamandra.png' },
+    { characterNameKey: 'event_chars.captain_shortbeard', ai: 'capitaobarbacurta', image: 'capitaobarbacurta.png' },
+    { characterNameKey: 'event_chars.lost_astronomer', ai: 'astronomoperdido', image: 'astronomoperdido.png' },
+    { characterNameKey: 'event_chars.mysterious_detective', ai: 'detetivemisterioso', image: 'detetivemisterioso.png' },
+    { characterNameKey: 'event_chars.witch_of_rest', ai: 'abruxadoresto', image: 'abruxadoresto.png' },
+    { characterNameKey: 'event_chars.yeti', ai: 'yeti', image: 'yeti.png' },
+    { characterNameKey: 'event_chars.guardian_of_dawn', ai: 'guardiaodaaurora', image: 'guardiaodaaurora.png' }
 ];
 
 const AVATAR_CATALOG_FOR_QUEUE = {
-    'graxa': { nameKey: 'avatars.graxa' },
-    'jujuba': { nameKey: 'avatars.jujuba' },
-    'frank': { nameKey: 'avatars.frank' },
-    'lele': { nameKey: 'avatars.lele' },
-    'vini': { nameKey: 'avatars.vini' },
-    'vini2': { nameKey: 'avatars.vini2' },
-    'nathan': { nameKey: 'avatars.nathan' },
-    'pao': { nameKey: 'avatars.pao' },
-    'luan': { nameKey: 'avatars.luan' },
-    'lorenzo': { nameKey: 'avatars.lorenzo' },
-    'rodrigo': { nameKey: 'avatars.rodrigo' },
-    'karol': { nameKey: 'avatars.karol' },
+    'graxa': { name: 'Graxa', image_url: 'graxa.png', cost: 2000, unlock_achievement_code: null },
+    'jujuba': { name: 'Jujuba', image_url: 'jujuba.png', cost: 2000, unlock_achievement_code: null },
+    'frank': { name: 'Frank', image_url: 'frank.png', cost: 2000, unlock_achievement_code: null },
+    'lele': { name: 'Lelê', image_url: 'lele.png', cost: 2000, unlock_achievement_code: null },
+    'vini': { name: 'Vini', image_url: 'vini.png', cost: 2000, unlock_achievement_code: null },
+    'vini2': { name: 'Vini2', image_url: 'vini2.png', cost: 2000, unlock_achievement_code: null },
+    'nathan': { name: 'Nathan', image_url: 'nathan.png', cost: 2000, unlock_achievement_code: null },
+    'pao': { name: 'Pão', image_url: 'pao.png', cost: 2000, unlock_achievement_code: null },
+    'luan': { name: 'Luan', image_url: 'luan.png', cost: 2000, unlock_achievement_code: null },
+    'lorenzo': { name: 'Lorenzo', image_url: 'lorenzo.png', cost: 2000, unlock_achievement_code: null },
+    'rodrigo': { name: 'Rodrigo', image_url: 'rodrigo.png', cost: 2000, unlock_achievement_code: null },
+    'karol': { name: 'Karol', image_url: 'karol.png', cost: 2000, unlock_achievement_code: null },
 };
 
 const INFINITE_CHALLENGE_OPPONENTS = [
-    { nameKey: 'player_names.player-2', aiType: 'default' },
-    { nameKey: 'story_dialogue.start_contravox_text', aiType: 'contravox' },
-    { nameKey: 'story_dialogue.start_versatrix_dialogue_text_1', aiType: 'versatrix' },
-    { nameKey: 'story_dialogue.start_reversum_text', aiType: 'reversum' },
-    { nameKey: 'story_dialogue.final_confrontation_1_text', aiType: 'necroverso_final' },
-    { nameKey: 'ai_dialogue.narrador_winning_1', aiType: 'narrador' },
-    { nameKey: 'story_dialogue.xael_challenge_intro_text', aiType: 'xael' },
-    { nameKey: 'splash.inversus', aiType: 'inversus' },
-    ...MONTHLY_EVENTS_FOR_QUEUE.map(event => ({ nameKey: event.characterNameKey, aiType: event.ai })),
+    { nameKey: 'player_names.player-2', aiType: 'default', avatar_url: 'aleatorio1.png' },
+    { nameKey: 'avatars.contravox', aiType: 'contravox', avatar_url: 'contravox.png' },
+    { nameKey: 'avatars.versatrix', aiType: 'versatrix', avatar_url: 'versatrix.png' },
+    { nameKey: 'avatars.reversum', aiType: 'reversum', avatar_url: 'reversum.png' },
+    { nameKey: 'player_names.necroverso_final', aiType: 'necroverso_final', avatar_url: 'necroverso2.png' },
+    { nameKey: 'player_names.narrador', aiType: 'narrador', avatar_url: 'narrador.png' },
+    { nameKey: 'player_names.xael', aiType: 'xael', avatar_url: 'xaeldesafio.png' },
+    { nameKey: 'splash.inversus', aiType: 'inversus', avatar_url: 'inversum1.png' },
+    ...MONTHLY_EVENTS_FOR_QUEUE.map(event => ({ nameKey: event.characterNameKey, aiType: event.ai, avatar_url: event.image })),
     ...Object.entries(AVATAR_CATALOG_FOR_QUEUE)
-        .map(([key, avatar]) => ({ nameKey: avatar.nameKey, aiType: 'default' }))
+        .map(([key, avatar]) => ({ nameKey: `avatars.${key}`, aiType: 'default', avatar_url: avatar.image_url }))
 ];
 
 
