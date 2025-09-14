@@ -65,10 +65,10 @@ const MONTHLY_EVENTS_FOR_QUEUE = [
 ];
 
 const AVATAR_CATALOG = {
-    'default_1': { name: 'Avatar 1', image_url: 'aleatorio1.png', cost: 1000, unlock_achievement_code: null },
-    'default_2': { name: 'Avatar 2', image_url: 'aleatorio2.png', cost: 1000, unlock_achievement_code: null },
-    'default_3': { name: 'Avatar 3', image_url: 'aleatorio3.png', cost: 1000, unlock_achievement_code: null },
-    'default_4': { name: 'Avatar 4', image_url: 'aleatorio4.png', cost: 1000, unlock_achievement_code: null },
+    'default_1': { name: 'Aleatório 1', image_url: 'aleatorio1.png', cost: 1000, unlock_achievement_code: null },
+    'default_2': { name: 'Aleatório 2', image_url: 'aleatorio2.png', cost: 1000, unlock_achievement_code: null },
+    'default_3': { name: 'Aleatório 3', image_url: 'aleatorio3.png', cost: 1000, unlock_achievement_code: null },
+    'default_4': { name: 'Aleatório 4', image_url: 'aleatorio4.png', cost: 1000, unlock_achievement_code: null },
     'graxa': { name: 'Graxa', image_url: 'graxa.png', cost: 2000, unlock_achievement_code: null },
     'jujuba': { name: 'Jujuba', image_url: 'jujuba.png', cost: 2000, unlock_achievement_code: null },
     'frank': { name: 'Frank', image_url: 'frank.png', cost: 2000, unlock_achievement_code: null },
@@ -88,7 +88,6 @@ const AVATAR_CATALOG = {
 };
 
 const INFINITE_CHALLENGE_OPPONENTS = [
-    { nameKey: 'player_names.player-2', aiType: 'default', avatar_url: 'aleatorio1.png' },
     { nameKey: 'player_names.contravox', aiType: 'contravox', avatar_url: 'contravox.png' },
     { nameKey: 'player_names.versatrix', aiType: 'versatrix', avatar_url: 'versatrix.png' },
     { nameKey: 'player_names.reversum', aiType: 'reversum', avatar_url: 'reversum.png' },
@@ -98,7 +97,7 @@ const INFINITE_CHALLENGE_OPPONENTS = [
     { nameKey: 'player_names.inversus', aiType: 'inversus', avatar_url: 'inversum1.png' },
     ...MONTHLY_EVENTS_FOR_QUEUE.map(event => ({ nameKey: event.characterNameKey, aiType: event.ai, avatar_url: event.image })),
     ...Object.entries(AVATAR_CATALOG)
-        .filter(([key]) => !['default_1', 'default_2', 'default_3', 'default_4', 'necroverso', 'contravox', 'versatrix', 'reversum'].includes(key))
+        .filter(([key]) => !['necroverso', 'contravox', 'versatrix', 'reversum'].includes(key))
         .map(([key, avatar]) => ({ name: avatar.name, aiType: 'default', avatar_url: avatar.image_url }))
 ];
 

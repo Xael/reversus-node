@@ -66,10 +66,10 @@ const TITLES = {
 };
 
 const AVATAR_CATALOG = {
-    'default_1': { name: 'Avatar 1', image_url: 'aleatorio1.png', cost: 1000, unlock_achievement_code: null },
-    'default_2': { name: 'Avatar 2', image_url: 'aleatorio2.png', cost: 1000, unlock_achievement_code: null },
-    'default_3': { name: 'Avatar 3', image_url: 'aleatorio3.png', cost: 1000, unlock_achievement_code: null },
-    'default_4': { name: 'Avatar 4', image_url: 'aleatorio4.png', cost: 1000, unlock_achievement_code: null },
+    'default_1': { name: 'Aleatório 1', image_url: 'aleatorio1.png', cost: 1000, unlock_achievement_code: null },
+    'default_2': { name: 'Aleatório 2', image_url: 'aleatorio2.png', cost: 1000, unlock_achievement_code: null },
+    'default_3': { name: 'Aleatório 3', image_url: 'aleatorio3.png', cost: 1000, unlock_achievement_code: null },
+    'default_4': { name: 'Aleatório 4', image_url: 'aleatorio4.png', cost: 1000, unlock_achievement_code: null },
     'graxa': { name: 'Graxa', image_url: 'graxa.png', cost: 2000, unlock_achievement_code: null },
     'jujuba': { name: 'Jujuba', image_url: 'jujuba.png', cost: 2000, unlock_achievement_code: null },
     'frank': { name: 'Frank', image_url: 'frank.png', cost: 2000, unlock_achievement_code: null },
