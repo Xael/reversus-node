@@ -64,19 +64,27 @@ const MONTHLY_EVENTS_FOR_QUEUE = [
     { characterNameKey: 'event_chars.guardian_of_dawn', ai: 'guardiaodaaurora', image: 'guardiaodaaurora.png' }
 ];
 
-const AVATAR_CATALOG_FOR_QUEUE = {
-    'graxa': { name: 'Graxa', image_url: 'graxa.png', cost: 2000, unlock_achievement_code: null },
-    'jujuba': { name: 'Jujuba', image_url: 'jujuba.png', cost: 2000, unlock_achievement_code: null },
-    'frank': { name: 'Frank', image_url: 'frank.png', cost: 2000, unlock_achievement_code: null },
-    'lele': { name: 'Lelê', image_url: 'lele.png', cost: 2000, unlock_achievement_code: null },
-    'vini': { name: 'Vini', image_url: 'vini.png', cost: 2000, unlock_achievement_code: null },
-    'vini2': { name: 'Vini2', image_url: 'vini2.png', cost: 2000, unlock_achievement_code: null },
-    'nathan': { name: 'Nathan', image_url: 'nathan.png', cost: 2000, unlock_achievement_code: null },
-    'pao': { name: 'Pão', image_url: 'pao.png', cost: 2000, unlock_achievement_code: null },
-    'luan': { name: 'Luan', image_url: 'luan.png', cost: 2000, unlock_achievement_code: null },
-    'lorenzo': { name: 'Lorenzo', image_url: 'lorenzo.png', cost: 2000, unlock_achievement_code: null },
-    'rodrigo': { name: 'Rodrigo', image_url: 'rodrigo.png', cost: 2000, unlock_achievement_code: null },
-    'karol': { name: 'Karol', image_url: 'karol.png', cost: 2000, unlock_achievement_code: null },
+const AVATAR_CATALOG = {
+    'default_1': { nameKey: 'avatars.default_1', image_url: 'aleatorio1.png', cost: 1000, unlock_achievement_code: null },
+    'default_2': { nameKey: 'avatars.default_2', image_url: 'aleatorio2.png', cost: 1000, unlock_achievement_code: null },
+    'default_3': { nameKey: 'avatars.default_3', image_url: 'aleatorio3.png', cost: 1000, unlock_achievement_code: null },
+    'default_4': { nameKey: 'avatars.default_4', image_url: 'aleatorio4.png', cost: 1000, unlock_achievement_code: null },
+    'graxa': { nameKey: 'avatars.graxa', image_url: 'graxa.png', cost: 2000, unlock_achievement_code: null },
+    'jujuba': { nameKey: 'avatars.jujuba', image_url: 'jujuba.png', cost: 2000, unlock_achievement_code: null },
+    'frank': { nameKey: 'avatars.frank', image_url: 'frank.png', cost: 2000, unlock_achievement_code: null },
+    'lele': { nameKey: 'avatars.lele', image_url: 'lele.png', cost: 2000, unlock_achievement_code: null },
+    'vini': { nameKey: 'avatars.vini', image_url: 'vini.png', cost: 2000, unlock_achievement_code: null },
+    'vini2': { nameKey: 'avatars.vini2', image_url: 'vini2.png', cost: 2000, unlock_achievement_code: null },
+    'nathan': { nameKey: 'avatars.nathan', image_url: 'nathan.png', cost: 2000, unlock_achievement_code: null },
+    'pao': { nameKey: 'avatars.pao', image_url: 'pao.png', cost: 2000, unlock_achievement_code: null },
+    'luan': { nameKey: 'avatars.luan', image_url: 'luan.png', cost: 2000, unlock_achievement_code: null },
+    'lorenzo': { nameKey: 'avatars.lorenzo', image_url: 'lorenzo.png', cost: 2000, unlock_achievement_code: null },
+    'rodrigo': { nameKey: 'avatars.rodrigo', image_url: 'rodrigo.png', cost: 2000, unlock_achievement_code: null },
+    'karol': { nameKey: 'avatars.karol', image_url: 'karol.png', cost: 2000, unlock_achievement_code: null },
+    'necroverso': { nameKey: 'avatars.necroverso', image_url: 'necroverso.png', cost: 15000, unlock_achievement_code: 'tutorial_win' },
+    'contravox': { nameKey: 'avatars.contravox', image_url: 'contravox.png', cost: 20000, unlock_achievement_code: 'contravox_win' },
+    'versatrix': { nameKey: 'avatars.versatrix', image_url: 'versatrix.png', cost: 25000, unlock_achievement_code: 'versatrix_win' },
+    'reversum': { nameKey: 'avatars.reversum', image_url: 'reversum.png', cost: 30000, unlock_achievement_code: 'reversum_win' }
 };
 
 const INFINITE_CHALLENGE_OPPONENTS = [
@@ -89,8 +97,9 @@ const INFINITE_CHALLENGE_OPPONENTS = [
     { nameKey: 'player_names.xael', aiType: 'xael', avatar_url: 'xaeldesafio.png' },
     { nameKey: 'player_names.inversus', aiType: 'inversus', avatar_url: 'inversum1.png' },
     ...MONTHLY_EVENTS_FOR_QUEUE.map(event => ({ nameKey: event.characterNameKey, aiType: event.ai, avatar_url: event.image })),
-    ...Object.entries(AVATAR_CATALOG_FOR_QUEUE)
-        .map(([key, avatar]) => ({ nameKey: `avatars.${key}`, aiType: 'default', avatar_url: avatar.image_url }))
+    ...Object.entries(AVATAR_CATALOG)
+        .filter(([key]) => !['default_1', 'default_2', 'default_3', 'default_4', 'necroverso', 'contravox', 'versatrix', 'reversum'].includes(key))
+        .map(([key, avatar]) => ({ nameKey: avatar.nameKey, aiType: 'default', avatar_url: avatar.image_url }))
 ];
 
 
