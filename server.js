@@ -1710,6 +1710,30 @@ io.on('connection', (socket) => {
             socket.emit('error', `Falha ao resetar a conta do usuário: ${error.message}`);
         }
     });
+
+    socket.on('admin:resetDatabase', async () => {
+        if (!socket.data.userProfile?.isAdmin) return;
+        try {
+            console.log(`ADMIN ACTION: ${socket.data.userProfile.username} is resetting the database.`);
+            await db.resetDatabase();
+            console.log("Database has been reset successfully.");
+            
+            infiniteChallengePot = await db.getInfiniteChallengePot();
+
+            io.emit('forceDisconnect', 'O servidor foi reiniciado por um administrador. A página será recarregada.');
+
+            setTimeout(() => {
+                io.sockets.sockets.forEach(s => {
+                    s.disconnect(true);
+                });
+            }, 1000);
+            
+        } catch (error) {
+            console.error("Admin Reset DB Error:", error);
+            socket.emit('error', 'Falha ao resetar o banco de dados.');
+        }
+    });
+
     // --- Infinite Challenge Handlers ---
     socket.on('getInfiniteChallengePot', (callback) => {
         if (typeof callback === 'function') {

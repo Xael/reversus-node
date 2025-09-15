@@ -105,12 +105,8 @@ async function grantTitleByCode(userId, code, client = pool) {
     }
 }
 
-// --- CRIAÇÃO DO ESQUEMA DO BANCO ---
-async function ensureSchema() {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const sql = `
+// --- SQL SCHEMA CONSTANT ---
+const schemaSQL = `
       CREATE TABLE IF NOT EXISTS avatars (
         code TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -244,8 +240,7 @@ async function ensureSchema() {
         id INT PRIMARY KEY DEFAULT 1,
         pot_value INT NOT NULL DEFAULT 10000
       );
-      INSERT INTO infinite_challenge_pot (id, pot_value) VALUES (1, 10000) ON CONFLICT(id) DO NOTHING;
-
+      
       CREATE TABLE IF NOT EXISTS infinite_challenge_ranking (
         user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         highest_level INT NOT NULL,
@@ -255,10 +250,20 @@ async function ensureSchema() {
       CREATE INDEX IF NOT EXISTS idx_infinite_ranking ON infinite_challenge_ranking (highest_level DESC, time_seconds ASC);
 
       CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC);
-    `;
-    await client.query(sql);
+`;
 
-    // Semeia a tabela de títulos
+// --- CRIAÇÃO DO ESQUEMA DO BANCO ---
+async function ensureSchema() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(schemaSQL);
+
+    // Semeia tabelas estáticas
+    await client.query(`
+        INSERT INTO infinite_challenge_pot (id, pot_value) VALUES (1, 10000) ON CONFLICT(id) DO NOTHING;
+    `);
+
     for (const [code, data] of Object.entries(TITLES)) {
         await client.query(
             `INSERT INTO titles (code, name, line) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING`,
@@ -266,7 +271,6 @@ async function ensureSchema() {
         );
     }
 
-    // Semeia a tabela de avatares com lógica de atualização para garantir consistência
     for (const [code, data] of Object.entries(AVATAR_CATALOG)) {
         await client.query(
             `INSERT INTO avatars (code, name, image_url, cost, unlock_achievement_code) 
@@ -280,21 +284,50 @@ async function ensureSchema() {
         );
     }
     
-    // Concede o título "Criador"
-    const creatorEmail = 'alexblbn@gmail.com';
-    const creatorRes = await client.query('SELECT id FROM users WHERE google_id = (SELECT google_id FROM users WHERE username LIKE \'%Alexandre Lima%\' LIMIT 1)');
+    const creatorRes = await client.query("SELECT id FROM users WHERE username LIKE '%Alexandre Lima%' LIMIT 1");
     if (creatorRes.rows.length > 0) {
-        const creatorId = creatorRes.rows[0].id;
-        const creatorTitleCode = 'creator';
-        const titleRes = await client.query(`SELECT id FROM titles WHERE code = $1`, [creatorTitleCode]);
-        if(titleRes.rows.length > 0) {
-           await client.query(`INSERT INTO user_titles (user_id, title_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [creatorId, titleRes.rows[0].id]);
-        }
+        await grantTitleByCode(creatorRes.rows[0].id, 'creator', client);
     }
 
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// --- FUNÇÃO DE RESET DO BANCO DE DADOS ---
+async function resetDatabase() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Busca o nome de todas as tabelas no esquema 'public'
+    const { rows } = await client.query(`
+      SELECT table_name FROM information_schema.tables 
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+    `);
+    
+    // Exclui todas as tabelas encontradas
+    for (const row of rows) {
+      console.log(`Dropping table ${row.table_name}...`);
+      // Usar aspas duplas para garantir que nomes de tabelas com letras maiúsculas ou caracteres especiais funcionem
+      await client.query(`DROP TABLE IF EXISTS "${row.table_name}" CASCADE;`);
+    }
+    
+    console.log("Todas as tabelas foram excluídas. Recriando o esquema...");
+
+    // Chama a função ensureSchema para recriar e semear tudo
+    await ensureSchema();
+    
+    await client.query('COMMIT');
+    console.log("Banco de dados resetado com sucesso.");
+
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error("Erro ao resetar o banco de dados:", e);
     throw e;
   } finally {
     client.release();
@@ -960,5 +993,5 @@ module.exports = {
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
   checkUserAchievement, setSelectedAvatar, logUniqueVisitor, getDailyAccessStats,
   getInfiniteChallengePot, updateInfiniteChallengePot, resetInfiniteChallengePot, upsertInfiniteChallengeResult,
-  getInfiniteRanking, grantTitleByCode, rollbackUser
+  getInfiniteRanking, grantTitleByCode, rollbackUser, resetDatabase
 };
