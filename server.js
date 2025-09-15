@@ -788,6 +788,10 @@ io.on('connection', (socket) => {
             const payload = ticket.getPayload();
             let userProfile = await db.findOrCreateUser(payload);
             
+            if (payload.email === ADMIN_EMAIL) {
+                await db.grantTitleByCode(userProfile.id, 'creator');
+            }
+
             if (onlineUsers.has(userProfile.id)) {
                 const oldSocketId = onlineUsers.get(userProfile.id)?.socketId;
                 const oldSocket = io.sockets.sockets.get(oldSocketId);
@@ -1678,59 +1682,6 @@ io.on('connection', (socket) => {
         } catch (error) {
             console.error("Admin Unban Error:", error);
             socket.emit('error', 'Falha ao desbanir o usuário.');
-        }
-    });
-
-    socket.on('admin:rollbackUser', async ({ userId }) => {
-        if (!socket.data.userProfile?.isAdmin) return;
-        if (socket.data.userProfile.id === userId) {
-            return socket.emit('error', 'Você não pode resetar sua própria conta.');
-        }
-        try {
-            const result = await db.rollbackUser(userId);
-            if (!result.success) {
-                throw new Error(result.error || 'Falha no banco de dados ao resetar a conta.');
-            }
-
-            const targetSocketData = onlineUsers.get(userId);
-            if (targetSocketData) {
-                const targetSocket = io.sockets.sockets.get(targetSocketData.socketId);
-                if (targetSocket) {
-                    targetSocket.emit('forceDisconnect', 'Sua conta foi redefinida por um administrador.');
-                    targetSocket.disconnect();
-                }
-            }
-            console.log(`Admin ${socket.data.userProfile.username} rolled back user ID ${userId}`);
-            
-            socket.emit('adminActionSuccess', 'Conta do usuário resetada com sucesso.');
-            const data = await getFullAdminData();
-            socket.emit('adminData', data);
-        } catch (error) {
-            console.error("Admin Rollback Error:", error);
-            socket.emit('error', `Falha ao resetar a conta do usuário: ${error.message}`);
-        }
-    });
-
-    socket.on('admin:resetDatabase', async () => {
-        if (!socket.data.userProfile?.isAdmin) return;
-        try {
-            console.log(`ADMIN ACTION: ${socket.data.userProfile.username} is resetting the database.`);
-            await db.resetDatabase();
-            console.log("Database has been reset successfully.");
-            
-            infiniteChallengePot = await db.getInfiniteChallengePot();
-
-            io.emit('forceDisconnect', 'O servidor foi reiniciado por um administrador. A página será recarregada.');
-
-            setTimeout(() => {
-                io.sockets.sockets.forEach(s => {
-                    s.disconnect(true);
-                });
-            }, 1000);
-            
-        } catch (error) {
-            console.error("Admin Reset DB Error:", error);
-            socket.emit('error', 'Falha ao resetar o banco de dados.');
         }
     });
 

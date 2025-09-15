@@ -28,6 +28,7 @@ async function testConnection() {
 }
 
 const TITLES = {
+    'master_of_inversus': { name: 'Mestre do Inversus', line: 'Conquista' },
     'pvp_rank_1': { name: 'DEUS do PVP', line: 'Ranking PvP', unlocks: { rank: 1 } },
     'pvp_rank_2': { name: 'MESTRE do PVP', line: 'Ranking PvP', unlocks: { rank: 2 } },
     'pvp_rank_3': { name: 'LORDE do PVP', line: 'Ranking PvP', unlocks: { rank: 3 } },
@@ -225,37 +226,6 @@ async function ensureSchema(externalClient = null) {
     throw e;
   } finally {
     if (!externalClient) client.release();
-  }
-}
-
-async function resetDatabase() {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    
-    const { rows } = await client.query(`
-      SELECT table_name FROM information_schema.tables 
-      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-    `);
-    
-    for (const row of rows) {
-      console.log(`Dropping table ${row.table_name}...`);
-      await client.query(`DROP TABLE IF EXISTS "${row.table_name}" CASCADE;`);
-    }
-    
-    console.log("All tables dropped. Recreating schema...");
-    
-    await ensureSchema(client);
-    
-    await client.query('COMMIT');
-    console.log("Database reset successfully.");
-
-  } catch (e) {
-    await client.query('ROLLBACK');
-    console.error("Error resetting database:", e);
-    throw e;
-  } finally {
-    client.release();
   }
 }
 
@@ -659,29 +629,6 @@ async function getInfiniteRanking(page = 1, limit = 10) {
     return { players: rankingRes.rows, currentPage: page, totalPages };
 }
 
-async function rollbackUser(userId) {
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        await client.query(`UPDATE users SET xp=0, level=1, victories=0, defeats=0, coinversus=100, last_daily_reward_claimed_at=NULL, selected_title_code=NULL, highest_rank_achieved=NULL, equipped_avatar_code=NULL WHERE id=$1`, [userId]);
-        const tablesToDeleteFrom = ['user_match_history', 'user_titles', 'user_achievements', 'user_avatars', 'friends', 'friend_requests', 'infinite_challenge_ranking', 'private_messages', 'player_reports', 'user_challenge_rewards'];
-        for (const table of tablesToDeleteFrom) {
-            let whereClause = `WHERE user_id = $1`;
-            if (table === 'friends') whereClause = `WHERE user_one_id = $1 OR user_two_id = $1`;
-            if (table === 'friend_requests' || table === 'private_messages') whereClause = `WHERE sender_id = $1 OR receiver_id = $1`;
-            if (table === 'player_reports') whereClause = `WHERE reporter_id = $1 OR reported_id = $1`;
-            await client.query(`DELETE FROM ${table} ${whereClause}`, [userId]);
-        }
-        await client.query('COMMIT');
-        return { success: true };
-    } catch (error) {
-        await client.query('ROLLBACK');
-        return { success: false, error: error.message };
-    } finally {
-        client.release();
-    }
-}
-
 module.exports = {
   testConnection, ensureSchema, findOrCreateUser, addXp, addMatchToHistory, updateUserRankAndTitles,
   getTopPlayers, searchUsers, getFriendshipStatus, sendFriendRequest, getPendingFriendRequests,
@@ -691,5 +638,5 @@ module.exports = {
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
   checkUserAchievement, setSelectedAvatar, logUniqueVisitor, getDailyAccessStats,
   getInfiniteChallengePot, updateInfiniteChallengePot, resetInfiniteChallengePot, upsertInfiniteChallengeResult,
-  getInfiniteRanking, grantTitleByCode, rollbackUser, resetDatabase
+  getInfiniteRanking, grantTitleByCode
 };
