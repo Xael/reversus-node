@@ -43,8 +43,7 @@ const TITLES = {
     'pvp_rank_81_90': { name: 'Aspirante do PVP', line: 'Ranking PvP', unlocks: { rank: 90 } },
     'pvp_rank_91_100': { name: 'Entre os 100 melhores no PVP!', line: 'Ranking PvP', unlocks: { rank: 100 } },
     'creator': { name: 'Criador', line: 'Especial' },
-    'eternal_reversus': { name: 'Eternamente Reversus', line: 'Desafio' },
-    'final_defender': { name: 'Defensor Final', line: 'Altar' },
+    'eternal_reversus': { name: 'ETERNAMENTE REVERSUS', line: 'Desafio' },
     'event_jan': { name: 'O Visionário', line: 'Evento' },
     'event_feb': { name: 'Unidor de Restos', line: 'Evento' },
     'event_mar': { name: 'Abençoado pelo Resto', line: 'Evento' },
@@ -181,14 +180,6 @@ const SCHEMA_QUERIES = [
         time_seconds INT NOT NULL, achieved_at TIMESTAMPTZ DEFAULT now()
     )`,
     `CREATE INDEX IF NOT EXISTS idx_infinite_ranking ON infinite_challenge_ranking (highest_level DESC, time_seconds ASC)`,
-    `CREATE TABLE IF NOT EXISTS altar_defense_ranking (
-        user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-        highest_wave INT NOT NULL,
-        highest_round INT NOT NULL,
-        time_seconds INT NOT NULL,
-        achieved_at TIMESTAMPTZ DEFAULT now()
-    )`,
-    `CREATE INDEX IF NOT EXISTS idx_altar_ranking ON altar_defense_ranking (highest_wave DESC, highest_round DESC, time_seconds ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC)`
 ];
 
@@ -638,32 +629,6 @@ async function getInfiniteRanking(page = 1, limit = 10) {
     return { players: rankingRes.rows, currentPage: page, totalPages };
 }
 
-async function upsertAltarDefenseResult(userId, wave, round, time) {
-    await pool.query(`
-        INSERT INTO altar_defense_ranking (user_id, highest_wave, highest_round, time_seconds) VALUES ($1, $2, $3, $4)
-        ON CONFLICT (user_id) DO UPDATE SET
-            highest_wave = EXCLUDED.highest_wave,
-            highest_round = EXCLUDED.highest_round,
-            time_seconds = EXCLUDED.time_seconds,
-            achieved_at = now()
-        WHERE EXCLUDED.highest_wave > altar_defense_ranking.highest_wave OR
-              (EXCLUDED.highest_wave = altar_defense_ranking.highest_wave AND EXCLUDED.highest_round > altar_defense_ranking.highest_round) OR
-              (EXCLUDED.highest_wave = altar_defense_ranking.highest_wave AND EXCLUDED.highest_round = altar_defense_ranking.highest_round AND EXCLUDED.time_seconds < altar_defense_ranking.time_seconds)
-    `, [userId, wave, round, time]);
-}
-
-async function getAltarRanking(page = 1, limit = 10) {
-    const totalRes = await pool.query('SELECT COUNT(*) FROM altar_defense_ranking');
-    const totalPages = Math.ceil(parseInt(totalRes.rows[0].count, 10) / limit);
-    const rankingRes = await pool.query(`
-        SELECT r.user_id, r.highest_wave, r.highest_round, r.time_seconds, u.google_id, u.username, u.selected_title_code, COALESCE(a.image_url, u.avatar_url) as avatar_url
-        FROM altar_defense_ranking r JOIN users u ON r.user_id = u.id LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
-        ORDER BY r.highest_wave DESC, r.highest_round DESC, r.time_seconds ASC LIMIT $1 OFFSET $2
-    `, [limit, (page - 1) * limit]);
-    rankingRes.rows.forEach(p => { if (p.avatar_url && !p.avatar_url.startsWith('http')) p.avatar_url = `./${p.avatar_url}`; });
-    return { players: rankingRes.rows, currentPage: page, totalPages };
-}
-
 module.exports = {
   testConnection, ensureSchema, findOrCreateUser, addXp, addMatchToHistory, updateUserRankAndTitles,
   getTopPlayers, searchUsers, getFriendshipStatus, sendFriendRequest, getPendingFriendRequests,
@@ -673,5 +638,5 @@ module.exports = {
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
   checkUserAchievement, setSelectedAvatar, logUniqueVisitor, getDailyAccessStats,
   getInfiniteChallengePot, updateInfiniteChallengePot, resetInfiniteChallengePot, upsertInfiniteChallengeResult,
-  getInfiniteRanking, grantTitleByCode, upsertAltarDefenseResult, getAltarRanking
+  getInfiniteRanking, grantTitleByCode
 };

@@ -851,7 +851,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('claimChallengeReward', async ({ challengeId, amount, titleCode }) => {
-        if (!socket.data.userProfile || !challengeId || typeof amount !== 'number' || amount === 0) {
+        if (!socket.data.userProfile || !challengeId || !amount || typeof amount !== 'number' || amount <= 0) {
             return;
         }
         try {
@@ -864,7 +864,7 @@ io.on('connection', (socket) => {
                 if (titleCode) {
                     await db.grantTitleByCode(userId, titleCode);
                 }
-                socket.emit('challengeRewardSuccess', { amount, titleCode, challengeId });
+                socket.emit('challengeRewardSuccess', { amount, titleCode });
                 const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, userId);
                 socket.emit('profileData', updatedProfile);
             }
@@ -938,16 +938,6 @@ io.on('connection', (socket) => {
         }
     });
     
-    socket.on('getAltarRanking', async ({ page = 1 } = {}) => {
-        try {
-            const rankingData = await db.getAltarRanking(page, 10);
-            socket.emit('altarRankingData', rankingData);
-        } catch (error) {
-            console.error("Error fetching altar ranking:", error);
-            socket.emit('error', 'Não foi possível carregar o ranking de Proteção do Altar.');
-        }
-    });
-
     socket.on('getProfile', async () => {
         if (!socket.data.userProfile) return;
         try {
@@ -1756,15 +1746,6 @@ socket.on('inviteFriendToLobby', async ({ targetUserId, roomId }) => {
         }
     });
 
-    socket.on('submitAltarResult', async ({ wave, round, time }) => {
-        if (!socket.data.userProfile) return;
-        try {
-            const userId = socket.data.userProfile.id;
-            await db.upsertAltarDefenseResult(userId, wave, round, time);
-        } catch (error) {
-            console.error("Submit Altar Result Error:", error);
-        }
-    });
 
 });
 
