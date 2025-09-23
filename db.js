@@ -28,6 +28,7 @@ async function testConnection() {
 }
 
 const TITLES = {
+    'tournament_champion': { name: 'Campeão do Torneio', line: 'Torneio' },
     'master_of_inversus': { name: 'Mestre do Inversus', line: 'Conquista' },
     'pvp_rank_1': { name: 'DEUS do PVP', line: 'Ranking PvP', unlocks: { rank: 1 } },
     'pvp_rank_2': { name: 'MESTRE do PVP', line: 'Ranking PvP', unlocks: { rank: 2 } },
@@ -43,7 +44,7 @@ const TITLES = {
     'pvp_rank_81_90': { name: 'Aspirante do PVP', line: 'Ranking PvP', unlocks: { rank: 90 } },
     'pvp_rank_91_100': { name: 'Entre os 100 melhores no PVP!', line: 'Ranking PvP', unlocks: { rank: 100 } },
     'creator': { name: 'Criador', line: 'Especial' },
-    'eternal_reversus': { name: 'ETERNAMENTE REVERSUS', line: 'Desafio' },
+    'eternal_reversus': { name: 'Eternamente Reversus', line: 'Desafio' },
     'event_jan': { name: 'O Visionário', line: 'Evento' },
     'event_feb': { name: 'Unidor de Restos', line: 'Evento' },
     'event_mar': { name: 'Abençoado pelo Resto', line: 'Evento' },
@@ -181,7 +182,13 @@ const SCHEMA_QUERIES = [
         time_seconds INT NOT NULL, achieved_at TIMESTAMPTZ DEFAULT now()
     )`,
     `CREATE INDEX IF NOT EXISTS idx_infinite_ranking ON infinite_challenge_ranking (highest_level DESC, time_seconds ASC)`,
-    `CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC)`
+    `CREATE INDEX IF NOT EXISTS idx_users_victories ON users (victories DESC)`,
+    `CREATE TABLE IF NOT EXISTS tournament_rankings (
+        user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        total_points INT DEFAULT 0,
+        tournaments_won INT DEFAULT 0
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_tournament_rankings_points ON tournament_rankings (total_points DESC)`
 ];
 
 async function ensureSchema(externalClient = null) {
@@ -630,6 +637,28 @@ async function getInfiniteRanking(page = 1, limit = 10) {
     return { players: rankingRes.rows, currentPage: page, totalPages };
 }
 
+async function updateTournamentStats(userId, points, isWin) {
+    const winIncrement = isWin ? 1 : 0;
+    await pool.query(`
+        INSERT INTO tournament_rankings (user_id, total_points, tournaments_won) VALUES ($1, $2, $3)
+        ON CONFLICT (user_id) DO UPDATE SET
+            total_points = tournament_rankings.total_points + $2,
+            tournaments_won = tournament_rankings.tournaments_won + $3
+    `, [userId, points, winIncrement]);
+}
+
+async function getTournamentRanking(page = 1, limit = 10) {
+    const totalRes = await pool.query('SELECT COUNT(*) FROM tournament_rankings');
+    const totalPages = Math.ceil(parseInt(totalRes.rows[0].count, 10) / limit);
+    const rankingRes = await pool.query(`
+        SELECT r.user_id, r.total_points, r.tournaments_won, u.google_id, u.username, u.selected_title_code, COALESCE(a.image_url, u.avatar_url) as avatar_url
+        FROM tournament_rankings r JOIN users u ON r.user_id = u.id LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
+        ORDER BY r.total_points DESC LIMIT $1 OFFSET $2
+    `, [limit, (page - 1) * limit]);
+    rankingRes.rows.forEach(p => { if (p.avatar_url && !p.avatar_url.startsWith('http')) p.avatar_url = `./${p.avatar_url}`; });
+    return { players: rankingRes.rows, currentPage: page, totalPages };
+}
+
 module.exports = {
   testConnection, ensureSchema, findOrCreateUser, addXp, addMatchToHistory, updateUserRankAndTitles,
   getTopPlayers, searchUsers, getFriendshipStatus, sendFriendRequest, getPendingFriendRequests,
@@ -639,5 +668,5 @@ module.exports = {
   hasClaimedChallengeReward, claimChallengeReward, updateUserCoins, grantUserAchievement, purchaseAvatar,
   checkUserAchievement, setSelectedAvatar, logUniqueVisitor, getDailyAccessStats,
   getInfiniteChallengePot, updateInfiniteChallengePot, resetInfiniteChallengePot, upsertInfiniteChallengeResult,
-  getInfiniteRanking, grantTitleByCode
+  getInfiniteRanking, grantTitleByCode, updateTournamentStats, getTournamentRanking
 };
