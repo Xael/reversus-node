@@ -26,6 +26,12 @@ const userSockets = new Map(); // Key: socket.id, Value: userId (DB id)
 
 // --- ESTADO GLOBAL DO SERVIDOR ---
 let infiniteChallengePot = null;
+const TOURNAMENT_FEE = 100;
+const TOURNAMENT_MAX_PLAYERS = 8;
+const tournamentQueues = {
+    online: [],
+};
+const activeTournaments = {};
 
 
 // --- LÓGICA DE JOGO ---
@@ -46,7 +52,8 @@ const TEAM_A_IDS = ['player-1', 'player-3'];
 const TEAM_B_IDS = ['player-2', 'player-4'];
 const NUM_PATHS = 6;
 const BOARD_SIZE = 9;
-const TURN_DURATION_MS = 60000;
+const TOURNAMENT_TURN_DURATION_MS = 30000;
+const REGULAR_TURN_DURATION_MS = 60000;
 
 // Data structures copied from client's js/core/config.js to ensure consistency for opponent queue
 const MONTHLY_EVENTS_FOR_QUEUE = [
@@ -88,14 +95,12 @@ const AVATAR_CATALOG = {
     'xael_desafio': { name: 'Xael Desafio', image_url: 'xaeldesafio.png', cost: 1000000, unlock_achievement_code: 'xael_win' }
 };
 
-const INFINITE_CHALLENGE_OPPONENTS = [
+const AI_OPPONENTS_POOL = [
     { nameKey: 'player_names.contravox', aiType: 'contravox', avatar_url: 'contravox.png' },
     { nameKey: 'player_names.versatrix', aiType: 'versatrix', avatar_url: 'versatrix.png' },
     { nameKey: 'player_names.reversum', aiType: 'reversum', avatar_url: 'reversum.png' },
-    { nameKey: 'player_names.necroverso_final', aiType: 'necroverso_final', avatar_url: 'necroverso2.png' },
     { nameKey: 'player_names.narrador', aiType: 'narrador', avatar_url: 'narrador.png' },
     { nameKey: 'player_names.xael', aiType: 'xael', avatar_url: 'xaeldesafio.png' },
-    { nameKey: 'player_names.inversus', aiType: 'inversus', avatar_url: 'inversum1.png' },
     ...MONTHLY_EVENTS_FOR_QUEUE.map(event => ({ nameKey: event.characterNameKey, aiType: event.ai, avatar_url: event.image })),
     ...Object.entries(AVATAR_CATALOG)
         .filter(([key]) => !['necroverso', 'contravox', 'versatrix', 'reversum'].includes(key))
@@ -677,8 +682,8 @@ async function handleTurnTimeout(room) {
     console.log(`Jogador ${timedOutPlayer.username} (${timedOutPlayerId}) esgotou o tempo na sala ${room.id}`);
     clearTurnTimers(room);
     
-    if (room.gameState.turn < 3) {
-        io.to(roomId).emit('matchCancelled', 'Partida anulada por inatividade no início.');
+    if (room.gameState.turn < 3 && !room.isTournamentMatch) {
+        io.to(room.id).emit('matchCancelled', 'Partida anulada por inatividade no início.');
         delete rooms[room.id];
         return;
     }
@@ -701,14 +706,14 @@ function startTurnTimer(room) {
     if (!room || !room.gameState) return;
     clearTurnTimers(room);
 
-    room.gameState.remainingTurnTime = 60;
-    const currentPlayerId = room.gameState.currentPlayer;
+    const turnDuration = room.isTournamentMatch ? TOURNAMENT_TURN_DURATION_MS : REGULAR_TURN_DURATION_MS;
+    room.gameState.remainingTurnTime = turnDuration / 1000;
 
     room.turnTimer = setTimeout(() => {
         if(rooms[room.id]) {
             handleTurnTimeout(room);
         }
-    }, TURN_DURATION_MS);
+    }, turnDuration);
 
     room.turnCountdownInterval = setInterval(() => {
         if (!rooms[room.id] || !rooms[room.id].gameState) {
@@ -744,7 +749,7 @@ function getLobbyDataForRoom(room) {
 }
 
 function getPublicRoomsList() {
-    return Object.values(rooms).filter(r => !r.gameStarted)
+    return Object.values(rooms).filter(r => !r.gameStarted && !r.isTournamentMatch)
         .map(r => ({
             id: r.id,
             name: r.name,
@@ -1224,7 +1229,7 @@ io.on('connection', (socket) => {
     
             const sortedPlayers = [...room.players].sort((a, b) => drawnCards[b.playerId].value - drawnCards[a.playerId].value);
     
-            if (sortedPlayers.length < 2 || drawnCards[sortedPlayers[0].playerId].value > drawnCards[a.playerId].value) {
+            if (sortedPlayers.length < 2 || drawnCards[sortedPlayers[0].playerId].value > drawnCards[sortedPlayers[1].playerId].value) {
                 tie = false;
                 startingPlayerId = sortedPlayers[0].playerId;
             }
@@ -1412,6 +1417,13 @@ io.on('connection', (socket) => {
             }
         }
 
+        // Remove from tournament queue
+        if (socket.data.inTournamentQueue) {
+            tournamentQueues.online = tournamentQueues.online.filter(p => p.socketId !== socket.id);
+            io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length });
+        }
+
+
         const userId = userSockets.get(socket.id);
         if (userId) {
             const currentSocketData = onlineUsers.get(userId);
@@ -1443,9 +1455,9 @@ io.on('connection', (socket) => {
         clearTurnTimers(room);
 
         if (room.gameStarted && room.gameState) {
-             if (room.gameState.turn < 3) {
+             if (room.gameState.turn < 3 && !room.isTournamentMatch) {
                 io.to(roomId).emit('matchCancelled', 'Partida anulada por desistência no início.');
-                delete rooms[room.id];
+                delete rooms[roomId];
                 io.emit('roomList', getPublicRoomsList());
                 return;
             }
@@ -1540,7 +1552,8 @@ io.on('connection', (socket) => {
             console.error("Get Online Friends Error:", error);
         }
     });
-socket.on('inviteFriendToLobby', async ({ targetUserId, roomId }) => {
+
+    socket.on('inviteFriendToLobby', async ({ targetUserId, roomId }) => {
         const inviterProfile = socket.data.userProfile;
         const room = rooms[roomId];
         if (!inviterProfile || !room) return;
@@ -1708,10 +1721,9 @@ socket.on('inviteFriendToLobby', async ({ targetUserId, roomId }) => {
             await db.updateUserCoins(userId, -entryFee);
             infiniteChallengePot = await db.updateInfiniteChallengePot(entryFee);
     
-            const opponentQueue = shuffle([...INFINITE_CHALLENGE_OPPONENTS]);
+            const opponentQueue = shuffle([...AI_OPPONENTS_POOL]); // Use AI pool
             const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, userId);
 
-            // Sanitize payload to prevent serialization issues with complex objects from DB
             let payload = { opponentQueue, updatedProfile };
             payload = JSON.parse(JSON.stringify(payload));
 
@@ -1743,6 +1755,79 @@ socket.on('inviteFriendToLobby', async ({ targetUserId, roomId }) => {
     
         } catch (error) {
             console.error("Submit Infinite Result Error:", error);
+        }
+    });
+
+    // --- TOURNAMENT HANDLERS ---
+    socket.on('joinTournamentQueue', async ({ type }) => {
+        if (!socket.data.userProfile) return socket.emit('error', 'Login necessário.');
+        
+        if (type === 'online') {
+            const user = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
+            
+            // Prevent joining multiple queues/games
+            if (socket.data.roomId || socket.data.currentQueue || socket.data.inTournamentQueue) {
+                return socket.emit('error', 'Você já está em uma partida ou fila.');
+            }
+            if (tournamentQueues.online.some(p => p.id === user.id)) return;
+            
+            if (user.coinversus < TOURNAMENT_FEE) {
+                return socket.emit('error', 'CoinVersus insuficiente para entrar no torneio.');
+            }
+            
+            await db.updateUserCoins(user.id, -TOURNAMENT_FEE);
+
+            tournamentQueues.online.push({ ...user, socketId: socket.id });
+            socket.data.inTournamentQueue = true;
+
+            io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length });
+            socket.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length });
+
+
+            if (tournamentQueues.online.length >= TOURNAMENT_MAX_PLAYERS) {
+                const players = tournamentQueues.online.splice(0, TOURNAMENT_MAX_PLAYERS);
+                await startTournament(players);
+            }
+        } else if (type === 'offline') {
+            const user = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
+            if (user.coinversus < TOURNAMENT_FEE) {
+                return socket.emit('error', 'CoinVersus insuficiente para entrar no torneio.');
+            }
+            await db.updateUserCoins(user.id, -TOURNAMENT_FEE);
+            
+            const shuffledAIs = shuffle([...AI_OPPONENTS_POOL]);
+            const aiPlayers = [];
+            for(let i=0; i < 7; i++){
+                const aiData = shuffledAIs[i];
+                aiPlayers.push({
+                    id: `ai-${i+1}`,
+                    username: aiData.name || aiData.nameKey, // Fallback to nameKey
+                    isAI: true,
+                    aiType: aiData.aiType,
+                    avatar_url: aiData.avatar_url,
+                });
+            }
+            const allPlayers = [{...user, socketId: socket.id}, ...aiPlayers];
+            await startTournament(shuffle(allPlayers));
+        }
+    });
+
+    socket.on('cancelTournamentQueue', async () => {
+        if (socket.data.inTournamentQueue) {
+            const user = socket.data.userProfile;
+            tournamentQueues.online = tournamentQueues.online.filter(p => p.socketId !== socket.id);
+            socket.data.inTournamentQueue = false;
+            await db.updateUserCoins(user.id, TOURNAMENT_FEE); // Refund
+            io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length });
+        }
+    });
+    
+    socket.on('getTournamentRanking', async ({ page = 1 } = {}) => {
+        try {
+            const rankingData = await db.getTournamentRanking(page, 10);
+            socket.emit('tournamentRankingData', rankingData);
+        } catch (error) {
+            socket.emit('error', 'Não foi possível carregar o ranking de torneios.');
         }
     });
 
@@ -1801,7 +1886,7 @@ async function checkAndStartMatch(mode) {
                 playerSocket.join(room.id);
             }
         });
-
+        
         const valueDeck = createDeck(VALUE_DECK_CONFIG, 'value');
         const effectDeck = createDeck(EFFECT_DECK_CONFIG, 'effect');
         
@@ -1812,7 +1897,7 @@ async function checkAndStartMatch(mode) {
             room.players.forEach(p => { drawnCards[p.playerId] = tempDeck.pop(); });
             drawResults = drawnCards;
             const sortedPlayers = [...room.players].sort((a,b) => drawnCards[b.playerId].value - drawnCards[a.playerId].value);
-            if (sortedPlayers.length < 2 || drawnCards[sortedPlayers[0].playerId].value > drawnCards[a.playerId].value) {
+            if (sortedPlayers.length < 2 || drawnCards[sortedPlayers[0].playerId].value > drawnCards[sortedPlayers[1].playerId].value) {
                 tie = false;
                 startingPlayerId = sortedPlayers[0].playerId;
             }
