@@ -78,7 +78,8 @@ const AVATAR_CATALOG = {
     'necroverso': { name: 'Necroverso', image_url: 'necroverso.png', cost: 15000, unlock_achievement_code: 'tutorial_win' },
     'contravox': { name: 'Contravox', image_url: 'contravox.png', cost: 20000, unlock_achievement_code: 'contravox_win' },
     'versatrix': { name: 'Versatrix', image_url: 'versatrix.png', cost: 25000, unlock_achievement_code: 'versatrix_win' },
-    'reversum': { name: 'Rei Reversum', image_url: 'reversum.png', cost: 30000, unlock_achievement_code: 'reversum_win' }
+    'reversum': { name: 'Rei Reversum', image_url: 'reversum.png', cost: 30000, unlock_achievement_code: 'reversum_win' },
+    'xael_desafio': { name: 'Xael Desafio', image_url: 'xaeldesafio.png', cost: 1000000, unlock_achievement_code: 'xael_win' }
 };
 
 function levelFromXp(xp) {
