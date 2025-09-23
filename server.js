@@ -208,11 +208,9 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
         }
     }
 
-    // Determine which effect category to apply to
     let isScoreEffect = ['Mais', 'Menos'].includes(effectName);
     let isMoveEffect = ['Sobe', 'Desce', 'Pula'].includes(effectName);
 
-    // Handle Reversus specifically
     if (originalCardName === 'Reversus') {
         if (effectTypeToReverse === 'score') {
             target.effects.score = getInverseEffect(target.effects.score);
@@ -220,7 +218,6 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
             target.effects.movement = getInverseEffect(target.effects.movement);
         }
     } 
-    // Handle global Reversus Total
     else if (originalCardName === 'Reversus Total' && options.isGlobal) {
         gameState.log.unshift({ type: 'system', message: `${casterName} usou o Reversus Total Globalmente, invertendo todos os efeitos!` });
         gameState.reversusTotalActive = true;
@@ -233,7 +230,6 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
             }
         });
     }
-    // Handle all other simple effects and individual locked Reversus Total
     else if (isScoreEffect) {
         target.effects.score = effectName;
     } else if (isMoveEffect) {
@@ -248,7 +244,7 @@ async function triggerFieldEffects_server(room) {
     const { gameState } = room;
     if (!gameState) return;
     
-    gameState.activeFieldEffects = []; // Reset effects each round
+    gameState.activeFieldEffects = [];
 
     for (const id of gameState.playerIdsInGame) {
         const player = gameState.players[id];
@@ -263,7 +259,6 @@ async function triggerFieldEffects_server(room) {
             const isPositive = space.color === 'blue';
             gameState.log.unshift({ type: 'system', message: `${player.name} parou em uma casa ${isPositive ? 'azul' : 'vermelha'}! Ativando efeito: ${space.effectName}`});
             
-            // For now, only handle status effects server-side for simplicity.
             const effectName = space.effectName;
             if (['Jogo Aberto', 'Imunidade', 'Desafio', 'Impulso', 'Super Exposto', 'Castigo', 'Parada', 'Resto Maior', 'Resto Menor'].includes(effectName)) {
                 gameState.activeFieldEffects.push({
@@ -275,7 +270,6 @@ async function triggerFieldEffects_server(room) {
              if (effectName === 'Jogo Aberto') {
                 gameState.revealedHands = gameState.playerIdsInGame.filter(pId => pId !== player.id);
             }
-            // Mark as used so it doesn't trigger again
             space.isUsed = true;
         }
     }
@@ -284,7 +278,6 @@ async function triggerFieldEffects_server(room) {
 async function processGameWin(room, winnerIds) {
     if (!room || !winnerIds || winnerIds.length === 0) return;
 
-    // --- Pot Distribution on Game Win ---
     const { gameState } = room;
     const potToDistribute = gameState.pot;
 
@@ -303,9 +296,8 @@ async function processGameWin(room, winnerIds) {
         if (playersToUpdateInDB.length > 0) {
             await Promise.all(playersToUpdateInDB.map(p => db.updateUserCoins(p.userId, p.amountChange)));
         }
-        gameState.pot = 0; // Pot is awarded
+        gameState.pot = 0;
     }
-    // --- End Pot Distribution ---
     
     const winnerData = [];
     const loserData = [];
@@ -334,7 +326,7 @@ async function processGameWin(room, winnerIds) {
 
     for (const loser of loserData) {
          try {
-            await db.addXp(loser.google_id, 25); // Some XP for playing
+            await db.addXp(loser.google_id, 25);
             await db.addMatchToHistory(loser.google_id, {
                 outcome: 'Derrota',
                 mode: `PVP ${room.mode}`,
@@ -354,7 +346,6 @@ async function checkGameEnd(room, from = 'unknown') {
     let gameEnded = false;
     let winners = [];
 
-    // Check for elimination victory
     if (room.mode === 'duo') {
         const teamA_active = activePlayers.some(pId => TEAM_A_IDS.includes(pId));
         const teamB_active = activePlayers.some(pId => TEAM_B_IDS.includes(pId));
@@ -365,7 +356,7 @@ async function checkGameEnd(room, from = 'unknown') {
             gameEnded = true;
             winners = activePlayers.filter(pId => TEAM_B_IDS.includes(pId));
         }
-    } else { // Solo modes
+    } else {
         if (activePlayers.length <= 1) {
             gameEnded = true;
             winners = activePlayers;
@@ -373,20 +364,23 @@ async function checkGameEnd(room, from = 'unknown') {
     }
     
     if (gameEnded) {
-        await processGameWin(room, winners);
-        const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
-        io.to(room.id).emit('gameOver', { message: `${winnerNames} venceu o jogo!`, winnerId: winners.length > 0 ? winners[0] : null });
-        delete rooms[room.id];
+        if (!room.isTournamentMatch) {
+            await processGameWin(room, winners);
+            const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
+            io.to(room.id).emit('gameOver', { message: `${winnerNames} venceu o jogo!`, winnerId: winners.length > 0 ? winners[0] : null });
+            delete rooms[room.id];
+        }
         return true;
     }
 
-    // Check for position victory
     const positionWinners = gameState.playerIdsInGame.filter(id => !gameState.players[id].isEliminated && gameState.players[id].position >= WINNING_POSITION);
     if (positionWinners.length > 0) {
-        await processGameWin(room, positionWinners);
-        const winnerNames = positionWinners.map(id => gameState.players[id].name).join(' e ');
-        io.to(room.id).emit('gameOver', { message: `${winnerNames} venceu o jogo!`, winnerId: positionWinners[0] });
-        delete rooms[room.id];
+        if (!room.isTournamentMatch) {
+            await processGameWin(room, positionWinners);
+            const winnerNames = positionWinners.map(id => gameState.players[id].name).join(' e ');
+            io.to(room.id).emit('gameOver', { message: `${winnerNames} venceu o jogo!`, winnerId: positionWinners[0] });
+            delete rooms[room.id];
+        }
         return true;
     }
     
@@ -395,7 +389,7 @@ async function checkGameEnd(room, from = 'unknown') {
 
 async function handleBettingPhase(room) {
     const { gameState } = room;
-    if (!gameState || gameState.betAmount <= 0) return true; // Continue if no betting
+    if (!gameState || gameState.betAmount <= 0) return true;
 
     const playersToUpdateInDB = [];
     let totalPotContribution = 0;
@@ -434,12 +428,12 @@ async function handlePotDistribution(room, winnerIds) {
     const potToDistribute = gameState.pot;
 
     if (!gameState || gameState.betAmount <= 0 || potToDistribute <= 0) {
-        return 0; // No betting or no pot, nothing to do.
+        return 0;
     }
 
     if (winnerIds.length === 0) {
         gameState.log.unshift({ type: 'system', message: `A rodada empatou! O prêmio de ${potToDistribute} 🪙 acumula para a próxima rodada.` });
-        return 0; // On a tie, the pot carries over.
+        return 0;
     }
 
     const potWinningsPerPlayer = Math.floor(potToDistribute / winnerIds.length);
@@ -457,7 +451,7 @@ async function handlePotDistribution(room, winnerIds) {
         await Promise.all(playersToUpdateInDB.map(p => db.updateUserCoins(p.userId, p.amountChange)));
     }
 
-    gameState.pot = 0; // Reset pot AFTER distribution
+    gameState.pot = 0;
     return potToDistribute;
 }
 
@@ -467,9 +461,10 @@ async function startNewRound(room) {
     gameState.turn++;
     gameState.log.unshift({ type: 'system', message: `--- Iniciando Rodada ${gameState.turn} ---`});
 
-    // Handle betting phase before anything else
-    const canContinue = await handleBettingPhase(room);
-    if (!canContinue) return; // Game ended due to elimination
+    if (!room.isTournamentMatch) {
+        const canContinue = await handleBettingPhase(room);
+        if (!canContinue) return;
+    }
 
     gameState.playerIdsInGame.forEach(id => {
         const player = gameState.players[id];
@@ -519,7 +514,6 @@ async function calculateScoresAndEndRound(room) {
         let score = p.playedCards.value.reduce((sum, card) => sum + card.value, 0);
         let restoValue = p.resto?.value || 0;
 
-        // Apply field effects
         const activeEffects = gameState.activeFieldEffects || [];
         if (activeEffects.some(fe => fe.name === 'Resto Maior' && fe.appliesTo === id)) restoValue = 10;
         if (activeEffects.some(fe => fe.name === 'Resto Menor' && fe.appliesTo === id)) restoValue = 2;
@@ -537,7 +531,6 @@ async function calculateScoresAndEndRound(room) {
         finalScores[id] = score;
     });
 
-    // Determine winner(s)
     let winners = [];
     if (gameState.playerIdsInGame.filter(pId => !gameState.players[pId].isEliminated).length > 0) {
         let highestScore = -Infinity;
@@ -553,28 +546,52 @@ async function calculateScoresAndEndRound(room) {
         });
     }
 
-    // Handle tie logic
     if (winners.length > 1) {
-        if (gameState.gameMode === 'duo') {
-            const firstWinnerTeam = TEAM_A_IDS.includes(winners[0]) ? 'A' : 'B';
-            const allOnSameTeam = winners.every(id => (firstWinnerTeam === 'A' && TEAM_A_IDS.includes(id)) || (firstWinnerTeam === 'B' && TEAM_B_IDS.includes(id)));
-            if (!allOnSameTeam) winners = [];
+        winners = [];
+    }
+    
+    if (room.isTournamentMatch) {
+        const tournament = activeTournaments[room.tournamentId];
+        const match = tournament.schedule[tournament.currentRound - 1].matches.find(m => m.matchId === room.id);
+        
+        let roundWinnerId = null;
+        if (winners.length === 1) {
+            roundWinnerId = winners[0];
+            const winnerIsP1 = match.p1.id === room.players.find(p => p.playerId === roundWinnerId).userProfile.id;
+            match.score[winnerIsP1 ? 0 : 1]++;
         } else {
-            winners = [];
+            match.draws++;
         }
+        
+        const humanSockets = room.players.filter(p => !p.userProfile.isAI).map(p => p.id);
+        if (humanSockets.length > 0) {
+            io.to(humanSockets).emit('tournamentMatchScoreUpdate', match.score);
+        }
+
+        const [p1Score, p2Score] = match.score;
+        const matchOver = p1Score >= 2 || p2Score >= 2 || (p1Score + p2Score + match.draws >= 3);
+        
+        if (matchOver) {
+            let matchWinnerId = 'draw';
+            if (p1Score > p2Score) matchWinnerId = match.p1.id;
+            else if (p2Score > p1Score) matchWinnerId = match.p2.id;
+
+            await processTournamentMatchResult(tournament, match, matchWinnerId);
+            if (humanSockets.length > 0) io.to(humanSockets).emit('tournamentMatchEnd');
+            delete rooms[room.id];
+        } else {
+            await startNewRound(room);
+        }
+        return;
     }
     
     const potWon = await handlePotDistribution(room, winners);
-
     const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
     gameState.log.unshift({ type: 'system', message: winners.length > 0 ? `Vencedor(es) da rodada: ${winnerNames}.` : "A rodada terminou em empate." });
-
     io.to(room.id).emit('roundSummary', { winners, finalScores, potWon });
-
     await new Promise(resolve => setTimeout(resolve, 5000));
     if (!rooms[room.id]) return;
 
-    // Apply pawn movements
     gameState.playerIdsInGame.forEach(id => {
         const p = gameState.players[id];
         if (p.isEliminated) return;
@@ -584,58 +601,20 @@ async function calculateScoresAndEndRound(room) {
         }
 
         let netMovement = 0;
-        const isWinner = winners.includes(id);
-        const isLoser = !isWinner && winners.length > 0;
-        const activeEffects = gameState.activeFieldEffects || [];
-
-        // Win/Loss standard
-        if (isWinner) {
-            netMovement++;
-        }
-
-        // Card Effects
+        if (winners.includes(id)) netMovement++;
         if (p.effects.movement === 'Sobe') netMovement++;
-        if (p.effects.movement === 'Desce') {
-            let movementModifier = activeEffects.some(fe => fe.name === 'Super Exposto' && fe.appliesTo === id) ? 2 : 1;
-            netMovement -= (1 * movementModifier);
-        }
-
-        // Win/Loss Field Effects
-        if (isWinner) {
-            if (activeEffects.some(fe => fe.name === 'Parada' && fe.appliesTo === id)) {
-                gameState.log.unshift({ type: 'system', message: `Efeito 'Parada' impede ${p.name} de avançar.` });
-                netMovement--; // Cancel the standard win advance
-            }
-            if (activeEffects.some(fe => fe.name === 'Desafio' && fe.appliesTo === id) && p.effects.score !== 'Mais' && p.effects.movement !== 'Sobe') {
-                netMovement += 2; // Already advanced 1, so add 2 more
-                gameState.log.unshift({ type: 'system', message: `Efeito 'Desafio' completo! ${p.name} ganha um bônus de avanço!` });
-            }
-        } else if (isLoser) {
-            if (activeEffects.some(fe => fe.name === 'Castigo' && fe.appliesTo === id)) {
-                netMovement -= 3;
-                gameState.log.unshift({ type: 'system', message: `Efeito 'Castigo' ativado para ${p.name}.` });
-            }
-            if (activeEffects.some(fe => fe.name === 'Impulso' && fe.appliesTo === id)) {
-                netMovement += 1;
-                gameState.log.unshift({ type: 'system', message: `Efeito 'Impulso' ativado para ${p.name}.` });
-            }
-        }
-
-        if (netMovement !== 0) {
-            p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + netMovement));
-        }
+        if (p.effects.movement === 'Desce') netMovement--;
+        if (netMovement !== 0) p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + netMovement));
     });
 
-    // Broadcast state so clients see pawn landings before field effects are processed
     broadcastGameState(room.id);
-    await new Promise(resolve => setTimeout(resolve, 1500)); // Short delay for visual feedback
-    if (!rooms[room.id]) return; // Check if room still exists after delay
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    if (!rooms[room.id]) return;
 
     if (await checkGameEnd(room, 'score')) return;
 
     if (winners.length > 0) {
-        const winnerTurnOrder = gameState.playerIdsInGame.filter(pId => winners.includes(pId));
-        gameState.currentPlayer = winnerTurnOrder[0];
+        gameState.currentPlayer = winners[0];
     }
     
     await startNewRound(room);
@@ -708,6 +687,7 @@ function startTurnTimer(room) {
 
     const turnDuration = room.isTournamentMatch ? TOURNAMENT_TURN_DURATION_MS : REGULAR_TURN_DURATION_MS;
     room.gameState.remainingTurnTime = turnDuration / 1000;
+    const currentPlayerId = room.gameState.currentPlayer;
 
     room.turnTimer = setTimeout(() => {
         if(rooms[room.id]) {
@@ -1081,7 +1061,6 @@ io.on('connection', (socket) => {
             await db.createPlayerReport(reporter.id, reportedGoogleId, message);
             socket.emit('reportSuccess', 'Denúncia enviada com sucesso.');
 
-            // Notifica todos os administradores online sobre a nova denúncia
             for (const [userId, userData] of onlineUsers.entries()) {
                 const userSocket = io.sockets.sockets.get(userData.socketId);
                 const userProfile = userSocket?.data?.userProfile;
@@ -1278,7 +1257,7 @@ io.on('connection', (socket) => {
             decks: { value: valueDeck, effect: effectDeck },
             discardPiles: { value: [], effect: [] },
             boardPaths: boardPaths, 
-            gamePhase: 'initial_draw', // Start with draw phase
+            gamePhase: 'initial_draw',
             gameMode: room.mode,
             isPvp: true, currentPlayer: startingPlayerId, turn: 1,
             log: [{ type: 'system', message: `Partida PvP iniciada! Modo: ${room.mode}` }],
@@ -1406,7 +1385,14 @@ io.on('connection', (socket) => {
     const handleDisconnect = async () => {
         console.log(`Jogador desconectado: ${socket.id}`);
         
-        // Remove from matchmaking queue
+        if (socket.data.inTournamentQueue) {
+            const user = socket.data.userProfile;
+            tournamentQueues.online = tournamentQueues.online.filter(p => p.socketId !== socket.id);
+            socket.data.inTournamentQueue = false;
+            if (user) await db.updateUserCoins(user.id, TOURNAMENT_FEE);
+            io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length });
+        }
+        
         for (const mode in matchmakingQueues) {
             const index = matchmakingQueues[mode].findIndex(p => p.id === socket.id);
             if (index !== -1) {
@@ -1417,17 +1403,9 @@ io.on('connection', (socket) => {
             }
         }
 
-        // Remove from tournament queue
-        if (socket.data.inTournamentQueue) {
-            tournamentQueues.online = tournamentQueues.online.filter(p => p.socketId !== socket.id);
-            io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length });
-        }
-
-
         const userId = userSockets.get(socket.id);
         if (userId) {
             const currentSocketData = onlineUsers.get(userId);
-            // Only process disconnect if the socket matches the current active socket for the user
             if (currentSocketData && currentSocketData.socketId === socket.id) {
                 onlineUsers.delete(userId);
                 try {
@@ -1467,6 +1445,15 @@ io.on('connection', (socket) => {
                 playerState.isEliminated = true;
                 room.gameState.log.unshift({type: 'system', message: `${disconnectedPlayer.username} se desconectou e foi eliminado.`});
                 
+                if (room.isTournamentMatch) {
+                    const tournament = activeTournaments[room.tournamentId];
+                    const match = tournament.schedule[tournament.currentRound - 1].matches.find(m => m.matchId === room.id);
+                    const winnerId = match.p1.id === disconnectedPlayer.userProfile.id ? match.p2.id : match.p1.id;
+                    await processTournamentMatchResult(tournament, match, winnerId);
+                    delete rooms[room.id];
+                    return;
+                }
+
                 if (await checkGameEnd(room, 'disconnect')) {
                     return;
                 } else {
@@ -1492,7 +1479,6 @@ io.on('connection', (socket) => {
     socket.on('leaveRoom', handleDisconnect);
     socket.on('disconnect', handleDisconnect);
 
-    // --- Matchmaking Handlers ---
     socket.on('joinMatchmaking', async ({ mode }) => {
         if (!socket.data.userProfile) {
             return socket.emit('error', 'Você precisa estar logado para entrar na fila.');
@@ -1501,7 +1487,6 @@ io.on('connection', (socket) => {
             return socket.emit('error', 'Modo de jogo inválido.');
         }
 
-        // Remove from other queues first
         for (const m in matchmakingQueues) {
             matchmakingQueues[m] = matchmakingQueues[m].filter(p => p.id !== socket.id);
         }
@@ -1528,7 +1513,6 @@ io.on('connection', (socket) => {
         }
     });
     
-    // --- Invite Handlers ---
     socket.on('getOnlineFriends', async () => {
         if (!socket.data.userProfile) return;
         try {
@@ -1658,7 +1642,6 @@ io.on('connection', (socket) => {
                     targetSocket.emit('forceDisconnect', 'Você foi banido do jogo.');
                     targetSocket.disconnect();
                 }
-                // Disconnect logic will handle removal from onlineUsers
             }
             console.log(`Admin ${socket.data.userProfile.username} banned user ID ${userId}`);
             
@@ -1721,7 +1704,7 @@ io.on('connection', (socket) => {
             await db.updateUserCoins(userId, -entryFee);
             infiniteChallengePot = await db.updateInfiniteChallengePot(entryFee);
     
-            const opponentQueue = shuffle([...AI_OPPONENTS_POOL]); // Use AI pool
+            const opponentQueue = shuffle([...AI_OPPONENTS_POOL]);
             const updatedProfile = await db.getUserProfile(socket.data.userProfile.google_id, userId);
 
             let payload = { opponentQueue, updatedProfile };
@@ -1765,7 +1748,6 @@ io.on('connection', (socket) => {
         if (type === 'online') {
             const user = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
             
-            // Prevent joining multiple queues/games
             if (socket.data.roomId || socket.data.currentQueue || socket.data.inTournamentQueue) {
                 return socket.emit('error', 'Você já está em uma partida ou fila.');
             }
@@ -1801,7 +1783,7 @@ io.on('connection', (socket) => {
                 const aiData = shuffledAIs[i];
                 aiPlayers.push({
                     id: `ai-${i+1}`,
-                    username: aiData.name || aiData.nameKey, // Fallback to nameKey
+                    username: aiData.name || aiData.nameKey,
                     isAI: true,
                     aiType: aiData.aiType,
                     avatar_url: aiData.avatar_url,
@@ -1958,6 +1940,183 @@ async function checkAndStartMatch(mode) {
     }
 }
 
+// --- TOURNAMENT LOGIC ---
+
+function generateTournamentSchedule(players) {
+    const schedule = [];
+    const numPlayers = players.length;
+    const rounds = numPlayers - 1;
+
+    for (let round = 0; round < rounds; round++) {
+        const matches = [];
+        for (let i = 0; i < numPlayers / 2; i++) {
+            const p1 = players[i];
+            const p2 = players[numPlayers - 1 - i];
+            matches.push({ p1, p2, result: null, score: [0, 0], draws: 0 });
+        }
+        schedule.push({ round: round + 1, matches });
+        players.splice(1, 0, players.pop());
+    }
+    return schedule;
+}
+
+async function startTournament(players) {
+    const tournamentId = `tourney-${Date.now()}`;
+    const humanPlayers = players.filter(p => !p.isAI);
+
+    const tournament = {
+        id: tournamentId,
+        players: players,
+        status: 'active',
+        currentRound: 1,
+        leaderboard: players.map(p => ({ id: p.id, username: p.username, points: 0, wins: 0, draws: 0, losses: 0 })),
+        schedule: generateTournamentSchedule([...players]),
+    };
+    activeTournaments[tournamentId] = tournament;
+
+    humanPlayers.forEach(p => {
+        const socket = io.sockets.sockets.get(p.socketId);
+        if (socket) {
+            socket.data.tournamentId = tournamentId;
+            socket.join(tournamentId);
+        }
+    });
+
+    io.to(tournamentId).emit('tournamentStateUpdate', tournament);
+    await startTournamentRound(tournament, 1);
+}
+
+async function startTournamentRound(tournament, roundNumber) {
+    tournament.currentRound = roundNumber;
+    io.to(tournament.id).emit('tournamentStateUpdate', tournament);
+    
+    const round = tournament.schedule.find(r => r.round === roundNumber);
+    if (!round) return;
+
+    for (const match of round.matches) {
+        if (match.p1.isAI && match.p2.isAI) {
+            await simulateAIMatch(tournament, match);
+        } else {
+            await createTournamentMatch(tournament, match);
+        }
+    }
+}
+
+async function simulateAIMatch(tournament, match) {
+    const rand = Math.random();
+    const winnerId = rand < 0.45 ? match.p1.id : rand < 0.9 ? match.p2.id : 'draw';
+    await processTournamentMatchResult(tournament, match, winnerId);
+}
+
+async function createTournamentMatch(tournament, match) {
+    const matchId = `t-match-${Date.now()}-${Math.random()}`;
+    match.matchId = matchId;
+    
+    const roomPlayers = [];
+    const player1 = { ...match.p1, userProfile: match.p1 };
+    const player2 = { ...match.p2, userProfile: match.p2 };
+
+    if (!player1.isAI) roomPlayers.push({ id: player1.socketId, username: player1.username, playerId: 'player-1', userProfile: player1 });
+    if (!player2.isAI) roomPlayers.push({ id: player2.socketId, username: player2.username, playerId: 'player-2', userProfile: player2 });
+    
+    const room = {
+        id: matchId, name: `Torneio: ${player1.username} vs ${player2.username}`, players: roomPlayers,
+        gameStarted: true, isTournamentMatch: true, tournamentId: tournament.id,
+        gameState: null,
+    };
+    rooms[matchId] = room;
+
+    const p1Profile = { id: 'player-1', name: player1.username, aiType: player1.isAI ? (player1.aiType || 'default') : null, isHuman: !player1.isAI, avatar_url: player1.avatar_url };
+    const p2Profile = { id: 'player-2', name: player2.username, aiType: player2.isAI ? (player2.aiType || 'default') : null, isHuman: !player2.isAI, avatar_url: player2.avatar_url };
+
+    const gameState = {
+        players: { 'player-1': p1Profile, 'player-2': p2Profile },
+        playerIdsInGame: ['player-1', 'player-2'],
+        decks: { value: shuffle(createDeck(VALUE_DECK_CONFIG, 'value')), effect: shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect')) },
+        discardPiles: { value: [], effect: [] },
+        boardPaths: generateBoardPaths(),
+        gamePhase: 'playing', gameMode: 'solo-2p', isPvp: true,
+        currentPlayer: 'player-1', turn: 1, log: [], consecutivePasses: 0,
+    };
+    
+    Object.values(gameState.players).forEach(p => {
+        p.hand = []; p.playedCards = { value: [], effect: [] }; p.effects = {};
+        for(let i=0; i<3; i++) p.hand.push(dealCard(gameState, 'value'));
+        for(let i=0; i<2; i++) p.hand.push(dealCard(gameState, 'effect'));
+    });
+    
+    room.gameState = gameState;
+    
+    roomPlayers.forEach(p => {
+        const socket = io.sockets.sockets.get(p.id);
+        if (socket) {
+            socket.data.roomId = matchId;
+            socket.join(matchId);
+            socket.emit('tournamentMatchStart', gameState);
+        }
+    });
+
+    startTurnTimer(room);
+}
+
+async function processTournamentMatchResult(tournament, match, winnerId) {
+    match.result = winnerId;
+    match.winnerId = winnerId;
+
+    const p1Leaderboard = tournament.leaderboard.find(p => p.id === match.p1.id);
+    const p2Leaderboard = tournament.leaderboard.find(p => p.id === match.p2.id);
+
+    if (winnerId === 'draw') {
+        p1Leaderboard.points += 1; p1Leaderboard.draws += 1;
+        p2Leaderboard.points += 1; p2Leaderboard.draws += 1;
+    } else if (winnerId === match.p1.id) {
+        p1Leaderboard.points += 3; p1Leaderboard.wins += 1;
+        p2Leaderboard.losses += 1;
+    } else {
+        p2Leaderboard.points += 3; p2Leaderboard.wins += 1;
+        p1Leaderboard.losses += 1;
+    }
+
+    io.to(tournament.id).emit('tournamentStateUpdate', tournament);
+
+    const currentRoundMatches = tournament.schedule.find(r => r.round === tournament.currentRound).matches;
+    if (currentRoundMatches.every(m => m.result !== null)) {
+        if (tournament.currentRound < 7) {
+            await startTournamentRound(tournament, tournament.currentRound + 1);
+        } else {
+            await endTournament(tournament);
+        }
+    }
+}
+
+async function endTournament(tournament) {
+    tournament.status = 'finished';
+    tournament.leaderboard.sort((a,b) => b.points - a.points || b.wins - a.wins);
+    
+    const champion = tournament.leaderboard[0];
+    const runnerUp = tournament.leaderboard[1];
+
+    if (champion && !champion.isAI) {
+        await db.updateUserCoins(champion.id, 560);
+        await db.updateTournamentStats(champion.id, champion.points, true);
+        await db.grantTitleByCode(champion.id, 'tournament_champion');
+    }
+    if (runnerUp && !runnerUp.isAI) {
+        await db.updateUserCoins(runnerUp.id, 240);
+        await db.updateTournamentStats(runnerUp.id, runnerUp.points, false);
+    }
+    
+    tournament.players.forEach(p => {
+        if (p.id !== champion.id && p.id !== runnerUp.id && !p.isAI) {
+            db.updateTournamentStats(p.id, tournament.leaderboard.find(lb => lb.id === p.id).points, false);
+        }
+        const socket = io.sockets.sockets.get(p.socketId);
+        if(socket) socket.data.tournamentId = null;
+    });
+
+    io.to(tournament.id).emit('tournamentStateUpdate', tournament);
+    delete activeTournaments[tournament.id];
+}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', async () => {
@@ -1965,7 +2124,7 @@ server.listen(PORT, '0.0.0.0', async () => {
         console.log(`--- SERVIDOR DE JOGO REVERSUS ONLINE ---`);
         console.log(`O servidor está rodando e escutando na porta: ${PORT}`);
         await db.testConnection();
-        await db.ensureSchema(); // CRITICAL: Ensure schema exists before any DB calls
+        await db.ensureSchema();
         infiniteChallengePot = await db.getInfiniteChallengePot();
         console.log(`Pote do Desafio Infinito carregado: ${infiniteChallengePot}`);
         console.log(`Aguardando conexões de jogadores...`);
