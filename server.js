@@ -71,28 +71,23 @@ const MONTHLY_EVENTS_FOR_QUEUE = [
     { characterNameKey: 'event_chars.guardian_of_dawn', ai: 'guardiaodaaurora', image: 'guardiaodaaurora.png' }
 ];
 
-const AVATAR_CATALOG = {
-    'default_1': { name: 'Aleatório 1', image_url: 'aleatorio1.png', cost: 1000, unlock_achievement_code: null },
-    'default_2': { name: 'Aleatório 2', image_url: 'aleatorio2.png', cost: 1000, unlock_achievement_code: null },
-    'default_3': { name: 'Aleatório 3', image_url: 'aleatorio3.png', cost: 1000, unlock_achievement_code: null },
-    'default_4': { name: 'Aleatório 4', image_url: 'aleatorio4.png', cost: 1000, unlock_achievement_code: null },
-    'graxa': { name: 'Graxa', image_url: 'graxa.png', cost: 2000, unlock_achievement_code: null },
-    'jujuba': { name: 'Jujuba', image_url: 'jujuba.png', cost: 2000, unlock_achievement_code: null },
-    'frank': { name: 'Frank', image_url: 'frank.png', cost: 2000, unlock_achievement_code: null },
-    'lele': { name: 'Lelê', image_url: 'lele.png', cost: 2000, unlock_achievement_code: null },
-    'vini': { name: 'Vini', image_url: 'vini.png', cost: 2000, unlock_achievement_code: null },
-    'vini2': { name: 'Vini2', image_url: 'vini2.png', cost: 2000, unlock_achievement_code: null },
-    'nathan': { name: 'Nathan', image_url: 'nathan.png', cost: 2000, unlock_achievement_code: null },
-    'pao': { name: 'Pão', image_url: 'pao.png', cost: 2000, unlock_achievement_code: null },
-    'luan': { name: 'Luan', image_url: 'luan.png', cost: 2000, unlock_achievement_code: null },
-    'lorenzo': { name: 'Lorenzo', image_url: 'lorenzo.png', cost: 2000, unlock_achievement_code: null },
-    'rodrigo': { name: 'Rodrigo', image_url: 'rodrigo.png', cost: 2000, unlock_achievement_code: null },
-    'karol': { name: 'Karol', image_url: 'karol.png', cost: 2000, unlock_achievement_code: null },
-    'necroverso': { name: 'Necroverso', image_url: 'necroverso.png', cost: 15000, unlock_achievement_code: 'tutorial_win' },
-    'contravox': { name: 'Contravox', image_url: 'contravox.png', cost: 20000, unlock_achievement_code: 'contravox_win' },
-    'versatrix': { name: 'Versatrix', image_url: 'versatrix.png', cost: 25000, unlock_achievement_code: 'versatrix_win' },
-    'reversum': { name: 'Rei Reversum', image_url: 'reversum.png', cost: 30000, unlock_achievement_code: 'reversum_win' },
-    'xael_desafio': { name: 'Xael Desafio', image_url: 'xaeldesafio.png', cost: 1000000, unlock_achievement_code: 'xael_win' }
+const AVATAR_CATALOG_FOR_QUEUE = {
+    'default_1': { nameKey: 'avatars.default_1', image_url: 'aleatorio1.png' },
+    'default_2': { nameKey: 'avatars.default_2', image_url: 'aleatorio2.png' },
+    'default_3': { nameKey: 'avatars.default_3', image_url: 'aleatorio3.png' },
+    'default_4': { nameKey: 'avatars.default_4', image_url: 'aleatorio4.png' },
+    'graxa': { nameKey: 'avatars.graxa', image_url: 'graxa.png' },
+    'jujuba': { nameKey: 'avatars.jujuba', image_url: 'jujuba.png' },
+    'frank': { nameKey: 'avatars.frank', image_url: 'frank.png' },
+    'lele': { nameKey: 'avatars.lele', image_url: 'lele.png' },
+    'vini': { nameKey: 'avatars.vini', image_url: 'vini.png' },
+    'vini2': { nameKey: 'avatars.vini2', image_url: 'vini2.png' },
+    'nathan': { nameKey: 'avatars.nathan', image_url: 'nathan.png' },
+    'pao': { nameKey: 'avatars.pao', image_url: 'pao.png' },
+    'luan': { nameKey: 'avatars.luan', image_url: 'luan.png' },
+    'lorenzo': { nameKey: 'avatars.lorenzo', image_url: 'lorenzo.png' },
+    'rodrigo': { nameKey: 'avatars.rodrigo', image_url: 'rodrigo.png' },
+    'karol': { nameKey: 'avatars.karol', image_url: 'karol.png' }
 };
 
 const AI_OPPONENTS_POOL = [
@@ -102,9 +97,7 @@ const AI_OPPONENTS_POOL = [
     { nameKey: 'player_names.narrador', aiType: 'narrador', avatar_url: 'narrador.png' },
     { nameKey: 'player_names.xael', aiType: 'xael', avatar_url: 'xaeldesafio.png' },
     ...MONTHLY_EVENTS_FOR_QUEUE.map(event => ({ nameKey: event.characterNameKey, aiType: event.ai, avatar_url: event.image })),
-    ...Object.entries(AVATAR_CATALOG)
-        .filter(([key]) => !['necroverso', 'contravox', 'versatrix', 'reversum'].includes(key))
-        .map(([key, avatar]) => ({ name: avatar.name, aiType: 'default', avatar_url: avatar.image_url }))
+    ...Object.values(AVATAR_CATALOG_FOR_QUEUE).map(avatar => ({ nameKey: avatar.nameKey, aiType: 'default', avatar_url: avatar.image_url }))
 ];
 
 
@@ -1788,7 +1781,7 @@ io.on('connection', (socket) => {
                     const aiData = shuffledAIs[i];
                     aiPlayers.push({
                         id: `ai-${i + 1}`,
-                        username: aiData.name || aiData.nameKey, // Fallback for older format
+                        username: aiData.nameKey, // Use nameKey consistently
                         isAI: true,
                         aiType: aiData.aiType,
                         avatar_url: aiData.avatar_url,
@@ -2046,9 +2039,14 @@ async function createTournamentMatch(tournament, match) {
     const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
     const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
     
-    const drawP1 = valueDeck.pop();
-    const drawP2 = valueDeck.pop();
-    const startingPlayerId = drawP1.value >= drawP2.value ? 'player-1' : 'player-2';
+    // Perform initial draw
+    const drawP1 = dealCard({ decks: { value: valueDeck, effect: effectDeck }, discardPiles: { value: [], effect: [] } }, 'value');
+    const drawP2 = dealCard({ decks: { value: valueDeck, effect: effectDeck }, discardPiles: { value: [], effect: [] } }, 'value');
+    let startingPlayerId = drawP1.value >= drawP2.value ? 'player-1' : 'player-2';
+    // Handle draw tie
+    if (drawP1.value === drawP2.value) {
+        startingPlayerId = Math.random() < 0.5 ? 'player-1' : 'player-2';
+    }
 
     const basePlayerObject = (id, data, restoCard) => ({
         id: id,
