@@ -1743,54 +1743,71 @@ io.on('connection', (socket) => {
 
     // --- TOURNAMENT HANDLERS ---
     socket.on('joinTournamentQueue', async ({ type }) => {
-        if (!socket.data.userProfile) return socket.emit('error', 'Login necessário.');
-        
-        if (type === 'online') {
-            const user = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
-            
-            if (socket.data.roomId || socket.data.currentQueue || socket.data.inTournamentQueue) {
-                return socket.emit('error', 'Você já está em uma partida ou fila.');
-            }
-            if (tournamentQueues.online.some(p => p.id === user.id)) return;
-            
-            if (user.coinversus < TOURNAMENT_FEE) {
-                return socket.emit('error', 'CoinVersus insuficiente para entrar no torneio.');
-            }
-            
-            await db.updateUserCoins(user.id, -TOURNAMENT_FEE);
+        try {
+            if (!socket.data.userProfile) return socket.emit('error', 'Login necessário.');
 
-            tournamentQueues.online.push({ ...user, socketId: socket.id });
-            socket.data.inTournamentQueue = true;
+            if (type === 'online') {
+                const user = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
 
-            io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length });
-            socket.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length });
+                if (socket.data.roomId || socket.data.currentQueue || socket.data.inTournamentQueue) {
+                    return socket.emit('error', 'Você já está em uma partida ou fila.');
+                }
+                if (tournamentQueues.online.some(p => p.id === user.id)) {
+                    return socket.emit('error', 'Você já está na fila do torneio. Se você se desconectou, aguarde um momento e tente novamente.');
+                }
 
+                if (user.coinversus < TOURNAMENT_FEE) {
+                    return socket.emit('error', 'CoinVersus insuficiente para entrar no torneio.');
+                }
 
-            if (tournamentQueues.online.length >= TOURNAMENT_MAX_PLAYERS) {
-                const players = tournamentQueues.online.splice(0, TOURNAMENT_MAX_PLAYERS);
-                await startTournament(players);
+                await db.updateUserCoins(user.id, -TOURNAMENT_FEE);
+
+                tournamentQueues.online.push({ ...user, socketId: socket.id });
+                socket.data.inTournamentQueue = true;
+
+                io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length, max: TOURNAMENT_MAX_PLAYERS });
+
+                if (tournamentQueues.online.length >= TOURNAMENT_MAX_PLAYERS) {
+                    const players = tournamentQueues.online.splice(0, TOURNAMENT_MAX_PLAYERS);
+                    players.forEach(p => {
+                        const playerSocket = io.sockets.sockets.get(p.socketId);
+                        if (playerSocket) playerSocket.data.inTournamentQueue = false;
+                    });
+                    await startTournament(players);
+                }
+            } else if (type === 'offline') {
+                const user = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
+                if (user.coinversus < TOURNAMENT_FEE) {
+                    return socket.emit('error', 'CoinVersus insuficiente para entrar no torneio.');
+                }
+                await db.updateUserCoins(user.id, -TOURNAMENT_FEE);
+
+                const shuffledAIs = shuffle([...AI_OPPONENTS_POOL]);
+                const aiPlayers = [];
+                for (let i = 0; i < 7; i++) {
+                    const aiData = shuffledAIs[i];
+                    aiPlayers.push({
+                        id: `ai-${i + 1}`,
+                        username: aiData.name || aiData.nameKey, // Fallback for older format
+                        isAI: true,
+                        aiType: aiData.aiType,
+                        avatar_url: aiData.avatar_url,
+                    });
+                }
+                const allPlayers = [{ ...user, socketId: socket.id }, ...aiPlayers];
+                await startTournament(shuffle(allPlayers));
             }
-        } else if (type === 'offline') {
-            const user = await db.getUserProfile(socket.data.userProfile.google_id, socket.data.userProfile.id);
-            if (user.coinversus < TOURNAMENT_FEE) {
-                return socket.emit('error', 'CoinVersus insuficiente para entrar no torneio.');
+        } catch (error) {
+            console.error("Error in joinTournamentQueue:", error);
+            socket.emit('error', 'Ocorreu um erro inesperado ao tentar iniciar o torneio.');
+            if (socket.data.userProfile) {
+                try {
+                    await db.updateUserCoins(socket.data.userProfile.id, TOURNAMENT_FEE);
+                    socket.emit('error', 'Sua taxa de entrada foi reembolsada.');
+                } catch (refundError) {
+                    console.error("Error refunding tournament fee:", refundError);
+                }
             }
-            await db.updateUserCoins(user.id, -TOURNAMENT_FEE);
-            
-            const shuffledAIs = shuffle([...AI_OPPONENTS_POOL]);
-            const aiPlayers = [];
-            for(let i=0; i < 7; i++){
-                const aiData = shuffledAIs[i];
-                aiPlayers.push({
-                    id: `ai-${i+1}`,
-                    username: aiData.name || aiData.nameKey,
-                    isAI: true,
-                    aiType: aiData.aiType,
-                    avatar_url: aiData.avatar_url,
-                });
-            }
-            const allPlayers = [{...user, socketId: socket.id}, ...aiPlayers];
-            await startTournament(shuffle(allPlayers));
         }
     });
 
@@ -1800,7 +1817,7 @@ io.on('connection', (socket) => {
             tournamentQueues.online = tournamentQueues.online.filter(p => p.socketId !== socket.id);
             socket.data.inTournamentQueue = false;
             await db.updateUserCoins(user.id, TOURNAMENT_FEE); // Refund
-            io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length });
+            io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length, max: TOURNAMENT_MAX_PLAYERS });
         }
     });
     
