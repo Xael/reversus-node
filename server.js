@@ -2028,36 +2028,71 @@ async function simulateAIMatch(tournament, match) {
 async function createTournamentMatch(tournament, match) {
     const matchId = `t-match-${Date.now()}-${Math.random()}`;
     match.matchId = matchId;
-    
-    const roomPlayers = [];
-    const player1 = { ...match.p1, userProfile: match.p1 };
-    const player2 = { ...match.p2, userProfile: match.p2 };
 
-    if (!player1.isAI) roomPlayers.push({ id: player1.socketId, username: player1.username, playerId: 'player-1', userProfile: player1 });
-    if (!player2.isAI) roomPlayers.push({ id: player2.socketId, username: player2.username, playerId: 'player-2', userProfile: player2 });
-    
+    const roomPlayers = [];
+    const player1Data = { ...match.p1, userProfile: match.p1 };
+    const player2Data = { ...match.p2, userProfile: match.p2 };
+
+    if (!player1Data.isAI) roomPlayers.push({ id: player1Data.socketId, username: player1Data.username, playerId: 'player-1', userProfile: player1Data });
+    if (!player2Data.isAI) roomPlayers.push({ id: player2Data.socketId, username: player2Data.username, playerId: 'player-2', userProfile: player2Data });
+
     const room = {
-        id: matchId, name: `Torneio: ${player1.username} vs ${player2.username}`, players: roomPlayers,
+        id: matchId, name: `Torneio: ${player1Data.username} vs ${player2Data.username}`, players: roomPlayers,
         gameStarted: true, isTournamentMatch: true, tournamentId: tournament.id,
         gameState: null,
     };
     rooms[matchId] = room;
 
-    const p1Profile = { id: 'player-1', name: player1.username, aiType: player1.isAI ? (player1.aiType || 'default') : null, isHuman: !player1.isAI, avatar_url: player1.avatar_url };
-    const p2Profile = { id: 'player-2', name: player2.username, aiType: player2.isAI ? (player2.aiType || 'default') : null, isHuman: !player2.isAI, avatar_url: player2.avatar_url };
+    const valueDeck = shuffle(createDeck(VALUE_DECK_CONFIG, 'value'));
+    const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
+    
+    const drawP1 = valueDeck.pop();
+    const drawP2 = valueDeck.pop();
+    const startingPlayerId = drawP1.value >= drawP2.value ? 'player-1' : 'player-2';
+
+    const basePlayerObject = (id, data, restoCard) => ({
+        id: id,
+        name: data.username,
+        isHuman: !data.isAI,
+        aiType: data.isAI ? (data.aiType || 'default') : null,
+        avatar_url: data.avatar_url,
+        pathId: id === 'player-1' ? 0 : 1,
+        position: 1,
+        hand: [],
+        resto: restoCard,
+        nextResto: null,
+        effects: { score: null, movement: null },
+        playedCards: { value: [], effect: [] },
+        playedValueCardThisTurn: false,
+        liveScore: 0,
+        status: 'neutral',
+        isEliminated: false,
+    });
+
+    const players = {
+        'player-1': basePlayerObject('player-1', player1Data, drawP1),
+        'player-2': basePlayerObject('player-2', player2Data, drawP2),
+    };
 
     const gameState = {
-        players: { 'player-1': p1Profile, 'player-2': p2Profile },
+        players,
         playerIdsInGame: ['player-1', 'player-2'],
-        decks: { value: shuffle(createDeck(VALUE_DECK_CONFIG, 'value')), effect: shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect')) },
-        discardPiles: { value: [], effect: [] },
+        decks: { value: valueDeck, effect: effectDeck },
+        discardPiles: { value: [drawP1, drawP2], effect: [] },
         boardPaths: generateBoardPaths(),
-        gamePhase: 'playing', gameMode: 'solo-2p', isPvp: true,
-        currentPlayer: 'player-1', turn: 1, log: [], consecutivePasses: 0,
+        gamePhase: 'playing',
+        gameMode: 'solo-2p',
+        isPvp: true,
+        isTournamentMatch: true,
+        currentPlayer: startingPlayerId,
+        turn: 1,
+        log: [{ type: 'system', message: `Partida de Torneio iniciada: ${player1Data.username} vs ${player2Data.username}` }],
+        consecutivePasses: 0,
+        activeFieldEffects: [],
+        revealedHands: [],
     };
     
     Object.values(gameState.players).forEach(p => {
-        p.hand = []; p.playedCards = { value: [], effect: [] }; p.effects = {};
         for(let i=0; i<3; i++) p.hand.push(dealCard(gameState, 'value'));
         for(let i=0; i<2; i++) p.hand.push(dealCard(gameState, 'effect'));
     });
@@ -2069,7 +2104,10 @@ async function createTournamentMatch(tournament, match) {
         if (socket) {
             socket.data.roomId = matchId;
             socket.join(matchId);
-            socket.emit('tournamentMatchStart', gameState);
+            const personalizedState = JSON.parse(JSON.stringify(gameState));
+            const opponentId = p.playerId === 'player-1' ? 'player-2' : 'player-1';
+            personalizedState.players[opponentId].hand = personalizedState.players[opponentId].hand.map(card => ({...card, isHidden: true}));
+            socket.emit('tournamentMatchStart', personalizedState);
         }
     });
 
