@@ -767,11 +767,6 @@ io.on('connection', (socket) => {
             const payload = ticket.getPayload();
             let userProfile = await db.findOrCreateUser(payload);
             
-            if (payload.email === ADMIN_EMAIL) {
-                await db.grantTitleByCode(userProfile.id, 'creator');
-                await db.setSelectedTitle(userProfile.id, 'creator');
-            }
-
             if (onlineUsers.has(userProfile.id)) {
                 const oldSocketId = onlineUsers.get(userProfile.id)?.socketId;
                 const oldSocket = io.sockets.sockets.get(oldSocketId);
@@ -793,7 +788,6 @@ io.on('connection', (socket) => {
             
             if (payload.email === ADMIN_EMAIL) {
                 profileFromDb.isAdmin = true;
-                profileFromDb.avatar_url = './xaeldesafio.png';
             }
             
             socket.data.userProfile = profileFromDb;
@@ -2050,7 +2044,7 @@ async function createTournamentMatch(tournament, match) {
 
     const basePlayerObject = (id, data, restoCard) => ({
         id: id,
-        name: data.username,
+        name: data.username.startsWith('event_chars.') || data.username.startsWith('player_names.') || data.username.startsWith('avatars.') ? data.username : data.username, // Pass key for translation
         isHuman: !data.isAI,
         aiType: data.isAI ? (data.aiType || 'default') : null,
         avatar_url: data.avatar_url,

@@ -280,7 +280,7 @@ async function getBannedUsers() {
 }
 
 async function findOrCreateUser(googlePayload) {
-  const { sub: googleId, name, picture: avatarUrl } = googlePayload;
+  const { sub: googleId, name, picture: avatarUrl, email } = googlePayload;
   let res = await pool.query(`SELECT * FROM users WHERE google_id = $1`, [googleId]);
   
   if (res.rows.length === 0) {
@@ -294,6 +294,15 @@ async function findOrCreateUser(googlePayload) {
   if (await isUserBanned(user.id)) {
       throw new Error("This account is banned.");
   }
+  
+  if (email === 'alexblbn@gmail.com') {
+      await grantTitleByCode(user.id, 'creator');
+      await pool.query(
+          'INSERT INTO user_avatars (user_id, avatar_code) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+          [user.id, 'xael_desafio']
+      );
+  }
+
   return user;
 }
 
@@ -648,8 +657,8 @@ async function updateTournamentStats(userId, points, isWin) {
 }
 
 async function getTournamentRanking(page = 1, limit = 10) {
-    const totalRes = await pool.query('SELECT COUNT(*) FROM tournament_rankings');
-    const totalPages = Math.ceil(parseInt(totalRes.rows[0].count, 10) / limit);
+    const { rows } = await pool.query('SELECT COUNT(*) FROM tournament_rankings');
+    const totalPages = Math.ceil(parseInt(rows[0].count, 10) / limit);
     const rankingRes = await pool.query(`
         SELECT r.user_id, r.total_points, r.tournaments_won, u.google_id, u.username, u.selected_title_code, COALESCE(a.image_url, u.avatar_url) as avatar_url
         FROM tournament_rankings r JOIN users u ON r.user_id = u.id LEFT JOIN avatars a ON u.equipped_avatar_code = a.code
