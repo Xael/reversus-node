@@ -657,7 +657,7 @@ async function handleTurnTimeout(room) {
     clearTurnTimers(room);
     
     if (room.gameState.turn < 3 && !room.isTournamentMatch) {
-        io.to(room.id).emit('matchCancelled', 'Partida anulada por inatividade no início.');
+        io.to(roomId).emit('matchCancelled', 'Partida anulada por inatividade no início.');
         delete rooms[room.id];
         return;
     }
@@ -2086,12 +2086,15 @@ async function createTournamentMatch(tournament, match) {
     const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
     
     // Perform initial draw
-    const drawP1 = dealCard({ decks: { value: valueDeck, effect: effectDeck }, discardPiles: { value: [], effect: [] } }, 'value');
-    const drawP2 = dealCard({ decks: { value: valueDeck, effect: effectDeck }, discardPiles: { value: [], effect: [] } }, 'value');
-    let startingPlayerId = drawP1.value >= drawP2.value ? 'player-1' : 'player-2';
-    // Handle draw tie
-    if (drawP1.value === drawP2.value) {
-        startingPlayerId = Math.random() < 0.5 ? 'player-1' : 'player-2';
+    let startingPlayerId, drawResults = {}, tie = true;
+    while(tie) {
+        const p1Card = dealCard({ decks: { value: valueDeck, effect: effectDeck }, discardPiles: { value: [], effect: [] } }, 'value');
+        const p2Card = dealCard({ decks: { value: valueDeck, effect: effectDeck }, discardPiles: { value: [], effect: [] } }, 'value');
+        drawResults = { 'player-1': p1Card, 'player-2': p2Card };
+        if (p1Card.value !== p2Card.value) {
+            tie = false;
+            startingPlayerId = p1Card.value > p2Card.value ? 'player-1' : 'player-2';
+        }
     }
 
     const basePlayerObject = (id, data, restoCard) => ({
@@ -2114,17 +2117,17 @@ async function createTournamentMatch(tournament, match) {
     });
 
     const players = {
-        'player-1': basePlayerObject('player-1', player1Data, drawP1),
-        'player-2': basePlayerObject('player-2', player2Data, drawP2),
+        'player-1': basePlayerObject('player-1', player1Data, drawResults['player-1']),
+        'player-2': basePlayerObject('player-2', player2Data, drawResults['player-2']),
     };
 
     const gameState = {
         players,
         playerIdsInGame: ['player-1', 'player-2'],
         decks: { value: valueDeck, effect: effectDeck },
-        discardPiles: { value: [drawP1, drawP2], effect: [] },
+        discardPiles: { value: [drawResults['player-1'], drawResults['player-2']], effect: [] },
         boardPaths: generateBoardPaths(),
-        gamePhase: 'playing',
+        gamePhase: 'initial_draw',
         gameMode: 'solo-2p',
         isPvp: true,
         isTournamentMatch: true,
@@ -2132,6 +2135,7 @@ async function createTournamentMatch(tournament, match) {
         turn: 1,
         log: [{ type: 'system', message: `Partida de Torneio iniciada: ${player1Data.username} vs ${player2Data.username}` }],
         consecutivePasses: 0,
+        drawResults: drawResults,
         activeFieldEffects: [],
         revealedHands: [],
     };
@@ -2155,7 +2159,12 @@ async function createTournamentMatch(tournament, match) {
         }
     });
 
-    startTurnTimer(room);
+    setTimeout(() => {
+        if (rooms[matchId] && rooms[matchId].gameState) {
+            rooms[matchId].gameState.gamePhase = 'playing';
+            startTurnTimer(rooms[matchId]);
+        }
+    }, 5000);
 }
 
 async function processTournamentMatchResult(tournament, match, winnerId) {
