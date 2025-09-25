@@ -28,6 +28,8 @@ const userSockets = new Map(); // Key: socket.id, Value: userId (DB id)
 let infiniteChallengePot = null;
 const TOURNAMENT_FEE = 100;
 const TOURNAMENT_MAX_PLAYERS = 8;
+const TOURNAMENT_QUEUE_TIMEOUT = 180000; // 3 minutos em milissegundos
+let tournamentQueueTimer = null;
 const tournamentQueues = {
     online: [],
 };
@@ -1378,6 +1380,10 @@ io.on('connection', (socket) => {
             socket.data.inTournamentQueue = false;
             if (user) await db.updateUserCoins(user.id, TOURNAMENT_FEE);
             io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length });
+            if (tournamentQueues.online.length === 0 && tournamentQueueTimer) {
+                clearTimeout(tournamentQueueTimer);
+                tournamentQueueTimer = null;
+            }
         }
         
         for (const mode in matchmakingQueues) {
@@ -1739,6 +1745,11 @@ io.on('connection', (socket) => {
                 if (socket.data.roomId || socket.data.currentQueue || socket.data.inTournamentQueue) {
                     return socket.emit('error', 'Você já está em uma partida ou fila.');
                 }
+                for (const tourneyId in activeTournaments) {
+                    if (activeTournaments[tourneyId].players.some(p => p.id === user.id)) {
+                        return socket.emit('error', 'Você já está participando de um torneio ativo. Por favor, aguarde o término.');
+                    }
+                }
                 if (tournamentQueues.online.some(p => p.id === user.id)) {
                     return socket.emit('error', 'Você já está na fila do torneio. Se você se desconectou, aguarde um momento e tente novamente.');
                 }
@@ -1752,9 +1763,15 @@ io.on('connection', (socket) => {
                 tournamentQueues.online.push({ ...user, socketId: socket.id });
                 socket.data.inTournamentQueue = true;
 
+                if (tournamentQueues.online.length === 1 && !tournamentQueueTimer) {
+                    tournamentQueueTimer = setTimeout(startTournamentWithAIIfNeeded, TOURNAMENT_QUEUE_TIMEOUT);
+                }
+
                 io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length, max: TOURNAMENT_MAX_PLAYERS });
 
                 if (tournamentQueues.online.length >= TOURNAMENT_MAX_PLAYERS) {
+                    if (tournamentQueueTimer) clearTimeout(tournamentQueueTimer);
+                    tournamentQueueTimer = null;
                     const players = tournamentQueues.online.splice(0, TOURNAMENT_MAX_PLAYERS);
                     players.forEach(p => {
                         const playerSocket = io.sockets.sockets.get(p.socketId);
@@ -1805,6 +1822,10 @@ io.on('connection', (socket) => {
             socket.data.inTournamentQueue = false;
             await db.updateUserCoins(user.id, TOURNAMENT_FEE); // Refund
             io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length, max: TOURNAMENT_MAX_PLAYERS });
+             if (tournamentQueues.online.length === 0 && tournamentQueueTimer) {
+                clearTimeout(tournamentQueueTimer);
+                tournamentQueueTimer = null;
+            }
         }
     });
     
@@ -1945,6 +1966,37 @@ async function checkAndStartMatch(mode) {
 }
 
 // --- TOURNAMENT LOGIC ---
+
+async function startTournamentWithAIIfNeeded() {
+    tournamentQueueTimer = null;
+    if (tournamentQueues.online.length === 0) return;
+
+    console.log("Tempo da fila de torneio esgotado. Iniciando com jogadores atuais e preenchendo com IA.");
+
+    const humanPlayers = tournamentQueues.online.splice(0, TOURNAMENT_MAX_PLAYERS);
+    humanPlayers.forEach(p => {
+        const playerSocket = io.sockets.sockets.get(p.socketId);
+        if (playerSocket) playerSocket.data.inTournamentQueue = false;
+    });
+
+    const neededAI = TOURNAMENT_MAX_PLAYERS - humanPlayers.length;
+    const aiPlayers = [];
+    if (neededAI > 0) {
+        const shuffledAIs = shuffle([...AI_OPPONENTS_POOL]);
+        for (let i = 0; i < neededAI; i++) {
+            const aiData = shuffledAIs[i % shuffledAIs.length];
+            aiPlayers.push({
+                id: `ai-${Date.now()}-${i}`,
+                username: aiData.nameKey,
+                isAI: true,
+                aiType: aiData.aiType,
+                avatar_url: aiData.avatar_url,
+            });
+        }
+    }
+
+    await startTournament(shuffle([...humanPlayers, ...aiPlayers]));
+}
 
 function generateTournamentSchedule(players) {
     const schedule = [];
