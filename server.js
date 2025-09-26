@@ -28,8 +28,6 @@ const userSockets = new Map(); // Key: socket.id, Value: userId (DB id)
 let infiniteChallengePot = null;
 const TOURNAMENT_FEE = 100;
 const TOURNAMENT_MAX_PLAYERS = 8;
-const TOURNAMENT_QUEUE_TIMEOUT = 180000; // 3 minutos em milissegundos
-let tournamentQueueTimer = null;
 const tournamentQueues = {
     online: [],
 };
@@ -472,8 +470,6 @@ async function startNewRound(room) {
         player.nextResto = null;
         player.effects = { score: null, movement: null };
         player.playedValueCardThisTurn = false;
-        // Reset tournament effect at start of new round
-        player.tournamentScoreEffect = null; 
     });
 
     gameState.reversusTotalActive = false;
@@ -499,15 +495,10 @@ async function startNewRound(room) {
     startTurnTimer(room);
 }
 
-/**
- * REFACTORED: Calculates final scores, determines winner, moves pawns, and checks for game over.
- * This version separates the logic for tournament and regular matches to prevent bugs.
- */
 async function calculateScoresAndEndRound(room) {
     const { gameState } = room;
     gameState.gamePhase = 'resolution';
     
-    // 1. Calculate final scores
     const finalScores = {};
     gameState.playerIdsInGame.forEach(id => {
         const p = gameState.players[id];
@@ -515,103 +506,111 @@ async function calculateScoresAndEndRound(room) {
 
         let score = p.playedCards.value.reduce((sum, card) => sum + card.value, 0);
         let restoValue = p.resto?.value || 0;
-        
+
         const activeEffects = gameState.activeFieldEffects || [];
         if (activeEffects.some(fe => fe.name === 'Resto Maior' && fe.appliesTo === id)) restoValue = 10;
         if (activeEffects.some(fe => fe.name === 'Resto Menor' && fe.appliesTo === id)) restoValue = 2;
-        if (p.effects.score === 'Mais') score += restoValue;
-        if (p.effects.score === 'Menos') score -= restoValue;
 
-        if (room.isTournamentMatch && p.tournamentScoreEffect) {
-            if (p.tournamentScoreEffect.effect === 'Sobe') score += 5;
-            if (p.tournamentScoreEffect.effect === 'Desce') score -= 5;
+        if (p.effects.score === 'Mais') score += restoValue;
+
+        let scoreModifier = 1;
+        if (activeEffects.some(fe => fe.name === 'Super Exposto' && fe.appliesTo === id)) {
+            scoreModifier = 2;
+            gameState.log.unshift({ type: 'system', message: `Efeito 'Super Exposto' dobrou o efeito negativo em ${p.name}!` });
         }
+        
+        if (p.effects.score === 'Menos') score -= (restoValue * scoreModifier);
         
         finalScores[id] = score;
     });
 
-    // 2. Determine winner(s)
     let winners = [];
-    let highestScore = -Infinity;
-    gameState.playerIdsInGame.forEach(id => {
-        if (!gameState.players[id].isEliminated && finalScores[id] > highestScore) {
-            highestScore = finalScores[id];
-            winners = [id];
-        } else if (!gameState.players[id].isEliminated && finalScores[id] === highestScore) {
-            winners.push(id);
-        }
-    });
+    if (gameState.playerIdsInGame.filter(pId => !gameState.players[pId].isEliminated).length > 0) {
+        let highestScore = -Infinity;
+        gameState.playerIdsInGame.forEach(id => {
+            const p = gameState.players[id];
+            if (p.isEliminated) return;
+            if (finalScores[id] > highestScore) {
+                highestScore = finalScores[id];
+                winners = [id];
+            } else if (finalScores[id] === highestScore) {
+                winners.push(id);
+            }
+        });
+    }
 
-    // 3. Handle tie logic
-    if (winners.length > 1) { winners = []; }
+    if (winners.length > 1) {
+        winners = [];
+    }
     
-    // 4. Log winner
-    const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
-    gameState.log.unshift({ type: 'system', message: winners.length > 0 ? `Vencedor(es) da rodada: ${winnerNames}.` : "A rodada terminou em empate." });
-
-    // --- Divergent Logic ---
     if (room.isTournamentMatch) {
         const tournament = activeTournaments[room.tournamentId];
-        const match = tournament.schedule.find(r => r.round === tournament.currentRound).matches.find(m => m.matchId === room.id);
+        const match = tournament.schedule[tournament.currentRound - 1].matches.find(m => m.matchId === room.id);
         
+        let roundWinnerId = null;
         if (winners.length === 1) {
-            const winnerIsP1 = match.p1.id === room.players.find(p => p.playerId === winners[0]).userProfile.id;
+            roundWinnerId = winners[0];
+            const winnerIsP1 = match.p1.id === room.players.find(p => p.playerId === roundWinnerId).userProfile.id;
             match.score[winnerIsP1 ? 0 : 1]++;
         } else {
-            match.draws = (match.draws || 0) + 1;
+            match.draws++;
         }
         
         const humanSockets = room.players.filter(p => !p.userProfile.isAI).map(p => p.id);
         if (humanSockets.length > 0) {
-            io.to(humanSockets).emit('roundSummary', { winners, finalScores, potWon: 0 });
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            if (!rooms[room.id]) return;
+            io.to(humanSockets).emit('tournamentMatchScoreUpdate', match.score);
         }
 
         const [p1Score, p2Score] = match.score;
-        const matchOver = p1Score >= 2 || p2Score >= 2 || (p1Score + p2Score + (match.draws || 0) >= 3);
+        const matchOver = p1Score >= 2 || p2Score >= 2 || (p1Score + p2Score + match.draws >= 3);
         
         if (matchOver) {
             let matchWinnerId = 'draw';
             if (p1Score > p2Score) matchWinnerId = match.p1.id;
             else if (p2Score > p1Score) matchWinnerId = match.p2.id;
+
             await processTournamentMatchResult(tournament, match, matchWinnerId);
             if (humanSockets.length > 0) io.to(humanSockets).emit('tournamentMatchEnd');
             delete rooms[room.id];
         } else {
-            if (winners.length > 0) room.gameState.currentPlayer = winners[0];
             await startNewRound(room);
         }
-        return; // CRITICAL: Prevent fall-through to regular game logic.
-    } else {
-        // --- REGULAR PVP LOGIC ---
-        const potWon = await handlePotDistribution(room, winners);
-        io.to(room.id).emit('roundSummary', { winners, finalScores, potWon });
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        if (!rooms[room.id]) return;
-
-        gameState.playerIdsInGame.forEach(id => {
-            const p = gameState.players[id];
-            if (p.isEliminated) return;
-
-            if (p.effects.movement === 'Pula' && p.targetPathForPula !== null) p.pathId = p.targetPathForPula;
-
-            let netMovement = 0;
-            if (winners.includes(id)) netMovement++;
-            if (p.effects.movement === 'Sobe') netMovement++;
-            if (p.effects.movement === 'Desce') netMovement--;
-            if (netMovement !== 0) p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + netMovement));
-        });
-
-        broadcastGameState(room.id);
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        if (!rooms[room.id]) return;
-
-        if (await checkGameEnd(room, 'score')) return;
-
-        if (winners.length > 0) gameState.currentPlayer = winners[0];
-        await startNewRound(room);
+        return;
     }
+    
+    const potWon = await handlePotDistribution(room, winners);
+    const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
+    gameState.log.unshift({ type: 'system', message: winners.length > 0 ? `Vencedor(es) da rodada: ${winnerNames}.` : "A rodada terminou em empate." });
+    io.to(room.id).emit('roundSummary', { winners, finalScores, potWon });
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    if (!rooms[room.id]) return;
+
+    gameState.playerIdsInGame.forEach(id => {
+        const p = gameState.players[id];
+        if (p.isEliminated) return;
+
+        if (p.effects.movement === 'Pula' && p.targetPathForPula !== null) {
+            p.pathId = p.targetPathForPula;
+        }
+
+        let netMovement = 0;
+        if (winners.includes(id)) netMovement++;
+        if (p.effects.movement === 'Sobe') netMovement++;
+        if (p.effects.movement === 'Desce') netMovement--;
+        if (netMovement !== 0) p.position = Math.min(WINNING_POSITION, Math.max(1, p.position + netMovement));
+    });
+
+    broadcastGameState(room.id);
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    if (!rooms[room.id]) return;
+
+    if (await checkGameEnd(room, 'score')) return;
+
+    if (winners.length > 0) {
+        gameState.currentPlayer = winners[0];
+    }
+    
+    await startNewRound(room);
 }
 
 // --- FUNÇÕES DE TIMER DE TURNO ---
@@ -656,7 +655,7 @@ async function handleTurnTimeout(room) {
     clearTurnTimers(room);
     
     if (room.gameState.turn < 3 && !room.isTournamentMatch) {
-        io.to(roomId).emit('matchCancelled', 'Partida anulada por inatividade no início.');
+        io.to(room.id).emit('matchCancelled', 'Partida anulada por inatividade no início.');
         delete rooms[room.id];
         return;
     }
@@ -1379,10 +1378,6 @@ io.on('connection', (socket) => {
             socket.data.inTournamentQueue = false;
             if (user) await db.updateUserCoins(user.id, TOURNAMENT_FEE);
             io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length });
-            if (tournamentQueues.online.length === 0 && tournamentQueueTimer) {
-                clearTimeout(tournamentQueueTimer);
-                tournamentQueueTimer = null;
-            }
         }
         
         for (const mode in matchmakingQueues) {
@@ -1744,11 +1739,6 @@ io.on('connection', (socket) => {
                 if (socket.data.roomId || socket.data.currentQueue || socket.data.inTournamentQueue) {
                     return socket.emit('error', 'Você já está em uma partida ou fila.');
                 }
-                for (const tourneyId in activeTournaments) {
-                    if (activeTournaments[tourneyId].players.some(p => p.id === user.id)) {
-                        return socket.emit('error', 'Você já está participando de um torneio ativo. Por favor, aguarde o término.');
-                    }
-                }
                 if (tournamentQueues.online.some(p => p.id === user.id)) {
                     return socket.emit('error', 'Você já está na fila do torneio. Se você se desconectou, aguarde um momento e tente novamente.');
                 }
@@ -1762,15 +1752,9 @@ io.on('connection', (socket) => {
                 tournamentQueues.online.push({ ...user, socketId: socket.id });
                 socket.data.inTournamentQueue = true;
 
-                if (tournamentQueues.online.length === 1 && !tournamentQueueTimer) {
-                    tournamentQueueTimer = setTimeout(startTournamentWithAIIfNeeded, TOURNAMENT_QUEUE_TIMEOUT);
-                }
-
                 io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length, max: TOURNAMENT_MAX_PLAYERS });
 
                 if (tournamentQueues.online.length >= TOURNAMENT_MAX_PLAYERS) {
-                    if (tournamentQueueTimer) clearTimeout(tournamentQueueTimer);
-                    tournamentQueueTimer = null;
                     const players = tournamentQueues.online.splice(0, TOURNAMENT_MAX_PLAYERS);
                     players.forEach(p => {
                         const playerSocket = io.sockets.sockets.get(p.socketId);
@@ -1821,10 +1805,6 @@ io.on('connection', (socket) => {
             socket.data.inTournamentQueue = false;
             await db.updateUserCoins(user.id, TOURNAMENT_FEE); // Refund
             io.emit('tournamentQueueUpdate', { count: tournamentQueues.online.length, max: TOURNAMENT_MAX_PLAYERS });
-             if (tournamentQueues.online.length === 0 && tournamentQueueTimer) {
-                clearTimeout(tournamentQueueTimer);
-                tournamentQueueTimer = null;
-            }
         }
     });
     
@@ -1966,37 +1946,6 @@ async function checkAndStartMatch(mode) {
 
 // --- TOURNAMENT LOGIC ---
 
-async function startTournamentWithAIIfNeeded() {
-    tournamentQueueTimer = null;
-    if (tournamentQueues.online.length === 0) return;
-
-    console.log("Tempo da fila de torneio esgotado. Iniciando com jogadores atuais e preenchendo com IA.");
-
-    const humanPlayers = tournamentQueues.online.splice(0, TOURNAMENT_MAX_PLAYERS);
-    humanPlayers.forEach(p => {
-        const playerSocket = io.sockets.sockets.get(p.socketId);
-        if (playerSocket) playerSocket.data.inTournamentQueue = false;
-    });
-
-    const neededAI = TOURNAMENT_MAX_PLAYERS - humanPlayers.length;
-    const aiPlayers = [];
-    if (neededAI > 0) {
-        const shuffledAIs = shuffle([...AI_OPPONENTS_POOL]);
-        for (let i = 0; i < neededAI; i++) {
-            const aiData = shuffledAIs[i % shuffledAIs.length];
-            aiPlayers.push({
-                id: `ai-${Date.now()}-${i}`,
-                username: aiData.nameKey,
-                isAI: true,
-                aiType: aiData.aiType,
-                avatar_url: aiData.avatar_url,
-            });
-        }
-    }
-
-    await startTournament(shuffle([...humanPlayers, ...aiPlayers]));
-}
-
 function generateTournamentSchedule(players) {
     const schedule = [];
     const numPlayers = players.length;
@@ -2085,20 +2034,16 @@ async function createTournamentMatch(tournament, match) {
     const effectDeck = shuffle(createDeck(EFFECT_DECK_CONFIG, 'effect'));
     
     // Perform initial draw
-    let startingPlayerId, drawResults = {}, tie = true;
-    while(tie) {
-        const p1Card = dealCard({ decks: { value: valueDeck, effect: effectDeck }, discardPiles: { value: [], effect: [] } }, 'value');
-        const p2Card = dealCard({ decks: { value: valueDeck, effect: effectDeck }, discardPiles: { value: [], effect: [] } }, 'value');
-        drawResults = { 'player-1': p1Card, 'player-2': p2Card };
-        if (p1Card.value !== p2Card.value) {
-            tie = false;
-            startingPlayerId = p1Card.value > p2Card.value ? 'player-1' : 'player-2';
-        }
+    const drawP1 = dealCard({ decks: { value: valueDeck, effect: effectDeck }, discardPiles: { value: [], effect: [] } }, 'value');
+    const drawP2 = dealCard({ decks: { value: valueDeck, effect: effectDeck }, discardPiles: { value: [], effect: [] } }, 'value');
+    let startingPlayerId = drawP1.value >= drawP2.value ? 'player-1' : 'player-2';
+    // Handle draw tie
+    if (drawP1.value === drawP2.value) {
+        startingPlayerId = Math.random() < 0.5 ? 'player-1' : 'player-2';
     }
 
     const basePlayerObject = (id, data, restoCard) => ({
         id: id,
-        dbId: data.id, // Store the persistent DB ID
         name: data.username.startsWith('event_chars.') || data.username.startsWith('player_names.') || data.username.startsWith('avatars.') ? data.username : data.username, // Pass key for translation
         isHuman: !data.isAI,
         aiType: data.isAI ? (data.aiType || 'default') : null,
@@ -2114,30 +2059,27 @@ async function createTournamentMatch(tournament, match) {
         liveScore: 0,
         status: 'neutral',
         isEliminated: false,
-        tournamentScoreEffect: null,
     });
 
     const players = {
-        'player-1': basePlayerObject('player-1', player1Data, drawResults['player-1']),
-        'player-2': basePlayerObject('player-2', player2Data, drawResults['player-2']),
+        'player-1': basePlayerObject('player-1', player1Data, drawP1),
+        'player-2': basePlayerObject('player-2', player2Data, drawP2),
     };
 
     const gameState = {
         players,
         playerIdsInGame: ['player-1', 'player-2'],
         decks: { value: valueDeck, effect: effectDeck },
-        discardPiles: { value: [drawResults['player-1'], drawResults['player-2']], effect: [] },
-        boardPaths: [], // Board not used in tournament match logic
-        gamePhase: 'initial_draw',
+        discardPiles: { value: [drawP1, drawP2], effect: [] },
+        boardPaths: generateBoardPaths(),
+        gamePhase: 'playing',
         gameMode: 'solo-2p',
         isPvp: true,
         isTournamentMatch: true,
-        tournamentMatch: match,
         currentPlayer: startingPlayerId,
         turn: 1,
         log: [{ type: 'system', message: `Partida de Torneio iniciada: ${player1Data.username} vs ${player2Data.username}` }],
         consecutivePasses: 0,
-        drawResults: drawResults,
         activeFieldEffects: [],
         revealedHands: [],
     };
@@ -2161,12 +2103,7 @@ async function createTournamentMatch(tournament, match) {
         }
     });
 
-    setTimeout(() => {
-        if (rooms[matchId] && rooms[matchId].gameState) {
-            rooms[matchId].gameState.gamePhase = 'playing';
-            startTurnTimer(rooms[matchId]);
-        }
-    }, 5000);
+    startTurnTimer(room);
 }
 
 async function processTournamentMatchResult(tournament, match, winnerId) {
