@@ -190,6 +190,71 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
     const target = gameState.players[targetId];
     if (!target) return;
 
+    if (gameState.isTournamentMatch) {
+        const caster = Object.values(gameState.players).find(p => p.name === casterName);
+        if (!caster) return;
+
+        const allPlayers = Object.values(gameState.players);
+        switch (card.name) {
+            case 'Sobe':
+            case 'Desce':
+                allPlayers.forEach(p => {
+                    if (p.tournamentScoreEffect && p.tournamentScoreEffect.casterId === caster.id) {
+                        p.tournamentScoreEffect = null;
+                    }
+                });
+                target.tournamentScoreEffect = { effect: card.name, casterId: caster.id };
+                gameState.log.unshift({ type: 'system', message: `${casterName} usou ${card.name} em ${target.name}.` });
+                return;
+
+            case 'Pula':
+                if (target.tournamentScoreEffect) {
+                    const stolenEffect = { ...target.tournamentScoreEffect };
+                    target.tournamentScoreEffect = null;
+                    allPlayers.forEach(p => {
+                        if (p.tournamentScoreEffect && p.tournamentScoreEffect.casterId === caster.id) {
+                            p.tournamentScoreEffect = null;
+                        }
+                    });
+                    caster.tournamentScoreEffect = { effect: stolenEffect.effect, casterId: caster.id };
+                    gameState.log.unshift({ type: 'system', message: `${caster.name} usou Pula e roubou o efeito '${stolenEffect.effect}' de ${target.name}!` });
+                } else {
+                    gameState.log.unshift({ type: 'system', message: `${caster.name} usou Pula em ${target.name}, mas não havia efeito para roubar.` });
+                }
+                return;
+
+            case 'Reversus':
+                if (target.tournamentScoreEffect) {
+                    const effectToReverse = target.tournamentScoreEffect;
+                    if (effectToReverse.casterId !== target.id && caster.id === effectToReverse.casterId) {
+                        target.tournamentScoreEffect = null;
+                        allPlayers.forEach(p => {
+                            if (p.tournamentScoreEffect && p.tournamentScoreEffect.casterId === caster.id) {
+                                p.tournamentScoreEffect = null;
+                            }
+                        });
+                        caster.tournamentScoreEffect = { effect: effectToReverse.effect, casterId: caster.id };
+                        gameState.log.unshift({ type: 'system', message: `${caster.name} usou Reversus e recuperou seu efeito '${effectToReverse.effect}' de ${target.name}!` });
+
+                    } else {
+                        const newEffect = effectToReverse.effect === 'Sobe' ? 'Desce' : 'Sobe';
+                        effectToReverse.effect = newEffect;
+                        gameState.log.unshift({ type: 'system', message: `${caster.name} usou Reversus e inverteu o efeito em ${target.name} para '${newEffect}'!` });
+                    }
+                } else {
+                    gameState.log.unshift({ type: 'system', message: `${caster.name} usou Reversus em ${target.name}, mas não havia efeito para reverter.` });
+                }
+                return;
+            
+            case 'Mais':
+            case 'Menos':
+            case 'Reversus Total':
+                gameState.log.unshift({ type: 'system', message: `A carta ${card.name} não tem efeito especial no modo Torneio.` });
+                return;
+        }
+    }
+
+
     let effectName = card.isLocked ? card.lockedEffect : card.name;
     const originalCardName = card.name;
 
@@ -470,6 +535,7 @@ async function startNewRound(room) {
         player.nextResto = null;
         player.effects = { score: null, movement: null };
         player.playedValueCardThisTurn = false;
+        player.tournamentScoreEffect = null;
     });
 
     gameState.reversusTotalActive = false;
@@ -521,6 +587,11 @@ async function calculateScoresAndEndRound(room) {
         
         if (p.effects.score === 'Menos') score -= (restoValue * scoreModifier);
         
+        if (gameState.isTournamentMatch && p.tournamentScoreEffect) {
+            if (p.tournamentScoreEffect.effect === 'Sobe') score += 5;
+            if (p.tournamentScoreEffect.effect === 'Desce') score -= 5;
+        }
+
         finalScores[id] = score;
     });
 
@@ -2059,6 +2130,7 @@ async function createTournamentMatch(tournament, match) {
         liveScore: 0,
         status: 'neutral',
         isEliminated: false,
+        tournamentScoreEffect: null,
     });
 
     const players = {
