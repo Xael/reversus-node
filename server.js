@@ -245,12 +245,6 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
                     gameState.log.unshift({ type: 'system', message: `${caster.name} usou Reversus em ${target.name}, mas não havia efeito para reverter.` });
                 }
                 return;
-            
-            case 'Mais':
-            case 'Menos':
-            case 'Reversus Total':
-                gameState.log.unshift({ type: 'system', message: `A carta ${card.name} não tem efeito especial no modo Torneio.` });
-                return;
         }
     }
 
@@ -702,6 +696,7 @@ function clearTurnTimers(room) {
 }
 
 function advanceToNextPlayerInRoom(room) {
+    if (!room || !room.gameState) return;
     let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
     let nextIndex = currentIndex;
     let attempts = 0;
@@ -732,7 +727,7 @@ async function handleTurnTimeout(room) {
     clearTurnTimers(room);
     
     if (room.gameState.turn < 3 && !room.isTournamentMatch) {
-        io.to(room.id).emit('matchCancelled', 'Partida anulada por inatividade no início.');
+        io.to(roomId).emit('matchCancelled', 'Partida anulada por inatividade no início.');
         delete rooms[room.id];
         return;
     }
@@ -755,10 +750,19 @@ function startTurnTimer(room) {
     if (!room || !room.gameState) return;
     clearTurnTimers(room);
 
+    // Check if it's an offline tournament match (1 human player max)
+    const isOfflineTournament = room.isTournamentMatch && room.players.filter(p => p.userProfile && !p.userProfile.isAI).length <= 1;
+
+    if (isOfflineTournament) {
+        // No timer for offline AI matches
+        room.gameState.remainingTurnTime = undefined;
+        broadcastGameState(room.id);
+        return;
+    }
+
     const turnDuration = room.isTournamentMatch ? TOURNAMENT_TURN_DURATION_MS : REGULAR_TURN_DURATION_MS;
     room.gameState.remainingTurnTime = turnDuration / 1000;
-    const currentPlayerId = room.gameState.currentPlayer;
-
+    
     room.turnTimer = setTimeout(() => {
         if(rooms[room.id]) {
             handleTurnTimeout(room);
@@ -1348,9 +1352,17 @@ io.on('connection', (socket) => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
-        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
-    
-        const playerState = room.gameState.players[player.playerId];
+        
+        if (!room || !room.gameState || !player) return;
+        
+        const isOfflineTournament = room.isTournamentMatch && room.players.filter(p => p.userProfile && !p.userProfile.isAI).length <= 1;
+        const currentPlayerState = room.gameState.players[room.gameState.currentPlayer];
+        const isMyTurn = room.gameState.currentPlayer === player.playerId;
+        const isMyAIsTurn = isOfflineTournament && !currentPlayerState.isHuman;
+
+        if (!isMyTurn && !isMyAIsTurn) return;
+
+        const playerState = room.gameState.players[room.gameState.currentPlayer];
         const cardIndex = playerState.hand.findIndex(c => c.id === cardId);
         if (cardIndex === -1) return;
     
@@ -1374,7 +1386,7 @@ io.on('connection', (socket) => {
                 targetSlotLabel = 'Movimento';
             }
         }
-        io.to(roomId).emit('cardPlayedAnimation', { casterId: player.playerId, targetId, card, targetSlotLabel });
+        io.to(roomId).emit('cardPlayedAnimation', { casterId: playerState.id, targetId, card, targetSlotLabel });
     
         if (card.type === 'value') {
             playerState.playedCards.value.push(card);
@@ -1403,7 +1415,9 @@ io.on('connection', (socket) => {
                     if (cardToReplace.isLocked) {
                         room.gameState.log.unshift({ type: 'system', message: `O efeito ${cardToReplace.lockedEffect} em ${cardDestinationPlayer.name} está travado! A carta ${card.name} não teve efeito.` });
                         room.gameState.discardPiles.effect.push(card);
-                        return broadcastGameState(roomId);
+                        broadcastGameState(roomId);
+                        advanceToNextPlayerInRoom(room); // Turn still advances
+                        return;
                     } else {
                         const [removedCard] = cardDestinationPlayer.playedCards.effect.splice(cardToReplaceIndex, 1);
                         room.gameState.discardPiles.effect.push(removedCard);
@@ -1422,14 +1436,23 @@ io.on('connection', (socket) => {
             applyEffect(room.gameState, card, targetId, playerState.name, options.effectType, options);
         }
         
-        broadcastGameState(roomId);
+        // After any card play, the turn ends. This simplifies AI logic and game flow.
+        advanceToNextPlayerInRoom(room);
     });
     
     socket.on('endTurn', async () => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
-        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
+        if (!room || !room.gameState || !player) return;
+
+        const currentPlayerState = room.gameState.players[room.gameState.currentPlayer];
+        const isMyTurn = room.gameState.currentPlayer === player.playerId;
+        const isMyAIsTurn = room.isTournamentMatch &&
+                            room.players.filter(p => p.userProfile && !p.userProfile.isAI).length <= 1 &&
+                            !currentPlayerState.isHuman;
+
+        if (!isMyTurn && !isMyAIsTurn) return;
 
         clearTurnTimers(room);
         room.gameState.consecutivePasses++;
