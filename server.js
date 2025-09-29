@@ -635,18 +635,24 @@ async function calculateScoresAndEndRound(room) {
         const [p1Score, p2Score] = match.score;
         const matchOver = p1Score >= 2 || p2Score >= 2 || (p1Score + p2Score + match.draws >= 3);
         
-        if (matchOver) {
-            let matchWinnerId = 'draw';
-            if (p1Score > p2Score) matchWinnerId = match.p1.id;
-            else if (p2Score > p1Score) matchWinnerId = match.p2.id;
+        // Add a delay here to allow players to see the score update.
+        setTimeout(async () => {
+            if (!rooms[room.id]) return; // Check if room still exists after delay
 
-            await processTournamentMatchResult(tournament, match, matchWinnerId);
-            if (humanSockets.length > 0) io.to(humanSockets).emit('tournamentMatchEnd');
-            delete rooms[room.id];
-        } else {
-            await startNewRound(room);
-        }
-        return;
+            if (matchOver) {
+                let matchWinnerId = 'draw';
+                if (p1Score > p2Score) matchWinnerId = match.p1.id;
+                else if (p2Score > p1Score) matchWinnerId = match.p2.id;
+
+                await processTournamentMatchResult(tournament, match, matchWinnerId);
+                if (humanSockets.length > 0) io.to(humanSockets).emit('tournamentMatchEnd');
+                delete rooms[room.id];
+            } else {
+                await startNewRound(room);
+            }
+        }, 4000); // 4-second delay
+
+        return; // Exit the function to wait for the timeout
     }
     
     const potWon = await handlePotDistribution(room, winners);
