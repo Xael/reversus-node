@@ -245,6 +245,17 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
                     gameState.log.unshift({ type: 'system', message: `${caster.name} usou Reversus em ${target.name}, mas não havia efeito para reverter.` });
                 }
                 return;
+            
+            case 'Mais':
+            case 'Menos':
+            case 'Reversus Total':
+                // Allow these cards to function normally
+                break;
+            
+            default:
+                // Other effect cards have no special function in tournament matches
+                gameState.log.unshift({ type: 'system', message: `${casterName} usou ${card.name} em ${target.name}, mas não tem efeito especial no torneio.` });
+                return;
         }
     }
 
@@ -757,6 +768,10 @@ function startTurnTimer(room) {
         // No timer for offline AI matches
         room.gameState.remainingTurnTime = undefined;
         broadcastGameState(room.id);
+        const currentPlayer = room.gameState.players[room.gameState.currentPlayer];
+        if (!currentPlayer.isHuman) {
+             io.to(room.id).emit('aiTurn', { playerId: currentPlayer.id });
+        }
         return;
     }
 
@@ -1358,6 +1373,8 @@ io.on('connection', (socket) => {
         const isOfflineTournament = room.isTournamentMatch && room.players.filter(p => p.userProfile && !p.userProfile.isAI).length <= 1;
         const currentPlayerState = room.gameState.players[room.gameState.currentPlayer];
         const isMyTurn = room.gameState.currentPlayer === player.playerId;
+        
+        // This is the AI's turn in an offline match, proxied by the human client's socket
         const isMyAIsTurn = isOfflineTournament && !currentPlayerState.isHuman;
 
         if (!isMyTurn && !isMyAIsTurn) return;
@@ -1416,7 +1433,7 @@ io.on('connection', (socket) => {
                         room.gameState.log.unshift({ type: 'system', message: `O efeito ${cardToReplace.lockedEffect} em ${cardDestinationPlayer.name} está travado! A carta ${card.name} não teve efeito.` });
                         room.gameState.discardPiles.effect.push(card);
                         broadcastGameState(roomId);
-                        return; // Turn does NOT advance, card fizzles.
+                        return;
                     } else {
                         const [removedCard] = cardDestinationPlayer.playedCards.effect.splice(cardToReplaceIndex, 1);
                         room.gameState.discardPiles.effect.push(removedCard);
@@ -1435,8 +1452,11 @@ io.on('connection', (socket) => {
             applyEffect(room.gameState, card, targetId, playerState.name, options.effectType, options);
         }
     
-        // After card play, just broadcast the state. The turn only ends on an 'endTurn' event.
         broadcastGameState(roomId);
+    
+        if (currentPlayerState && !currentPlayerState.isHuman) {
+            advanceToNextPlayerInRoom(room);
+        }
     });
     
     socket.on('endTurn', async () => {
@@ -2143,7 +2163,7 @@ async function createTournamentMatch(tournament, match) {
 
     const basePlayerObject = (id, data, restoCard) => ({
         id: id,
-        name: data.username.startsWith('event_chars.') || data.username.startsWith('player_names.') || data.username.startsWith('avatars.') ? data.username : data.username, // Pass key for translation
+        name: data.username,
         isHuman: !data.isAI,
         aiType: data.isAI ? (data.aiType || 'default') : null,
         avatar_url: data.avatar_url,
