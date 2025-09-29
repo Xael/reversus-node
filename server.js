@@ -1416,8 +1416,7 @@ io.on('connection', (socket) => {
                         room.gameState.log.unshift({ type: 'system', message: `O efeito ${cardToReplace.lockedEffect} em ${cardDestinationPlayer.name} está travado! A carta ${card.name} não teve efeito.` });
                         room.gameState.discardPiles.effect.push(card);
                         broadcastGameState(roomId);
-                        advanceToNextPlayerInRoom(room); // Turn still advances
-                        return;
+                        return; // Turn does NOT advance, card fizzles.
                     } else {
                         const [removedCard] = cardDestinationPlayer.playedCards.effect.splice(cardToReplaceIndex, 1);
                         room.gameState.discardPiles.effect.push(removedCard);
@@ -1435,9 +1434,9 @@ io.on('connection', (socket) => {
             cardDestinationPlayer.playedCards.effect.push(card);
             applyEffect(room.gameState, card, targetId, playerState.name, options.effectType, options);
         }
-        
-        // After any card play, the turn ends. This simplifies AI logic and game flow.
-        advanceToNextPlayerInRoom(room);
+    
+        // After card play, just broadcast the state. The turn only ends on an 'endTurn' event.
+        broadcastGameState(roomId);
     });
     
     socket.on('endTurn', async () => {
