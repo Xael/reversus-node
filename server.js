@@ -758,6 +758,14 @@ function startTurnTimer(room) {
     if (!room || !room.gameState) return;
     clearTurnTimers(room);
 
+    // In offline tournaments, the client is responsible for AI turns.
+    // We just broadcast the state and let the client's AI take over.
+    const isOfflineAITournament = room.isTournamentMatch && room.players.filter(p => p.userProfile && !p.userProfile.isAI).length <= 1;
+    if (isOfflineAITournament && !room.gameState.players[room.gameState.currentPlayer].isHuman) {
+        broadcastGameState(room.id);
+        return;
+    }
+
     const turnDuration = room.isTournamentMatch ? TOURNAMENT_TURN_DURATION_MS : REGULAR_TURN_DURATION_MS;
     room.gameState.remainingTurnTime = turnDuration / 1000;
     
