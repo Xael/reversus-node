@@ -758,20 +758,6 @@ function startTurnTimer(room) {
     if (!room || !room.gameState) return;
     clearTurnTimers(room);
 
-    // Check if it's an offline tournament match (1 human player max)
-    const isOfflineTournament = room.isTournamentMatch && room.players.filter(p => p.userProfile && !p.userProfile.isAI).length <= 1;
-
-    if (isOfflineTournament) {
-        // No timer for offline AI matches
-        room.gameState.remainingTurnTime = undefined;
-        broadcastGameState(room.id);
-        const currentPlayer = room.gameState.players[room.gameState.currentPlayer];
-        if (!currentPlayer.isHuman) {
-             io.to(room.id).emit('aiTurn', { playerId: currentPlayer.id });
-        }
-        return;
-    }
-
     const turnDuration = room.isTournamentMatch ? TOURNAMENT_TURN_DURATION_MS : REGULAR_TURN_DURATION_MS;
     room.gameState.remainingTurnTime = turnDuration / 1000;
     
@@ -1371,7 +1357,6 @@ io.on('connection', (socket) => {
         const currentPlayerState = room.gameState.players[room.gameState.currentPlayer];
         const isMyTurn = room.gameState.currentPlayer === player.playerId;
         
-        // This is the AI's turn in an offline match, proxied by the human client's socket
         const isMyAIsTurn = isOfflineTournament && !currentPlayerState.isHuman;
 
         if (!isMyTurn && !isMyAIsTurn) return;
@@ -1451,8 +1436,10 @@ io.on('connection', (socket) => {
     
         broadcastGameState(roomId);
     
-        if (currentPlayerState && !currentPlayerState.isHuman) {
-            advanceToNextPlayerInRoom(room);
+        // Only advance turn immediately if it's a server-controlled AI turn (not a client-proxied one)
+        // Since client-proxied AIs will send their own 'endTurn', we avoid a double-advance.
+        if (currentPlayerState && !currentPlayerState.isHuman && !isMyAIsTurn) {
+             advanceToNextPlayerInRoom(room);
         }
     });
     
