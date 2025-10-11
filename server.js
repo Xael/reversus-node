@@ -189,80 +189,6 @@ const getInverseEffect = (effect) => {
 const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse, options = {}) => {
     const target = gameState.players[targetId];
     if (!target) return;
-    
-    const caster = Object.values(gameState.players).find(p => p.name === casterName);
-    if (!caster) return;
-
-    if (gameState.isTournamentMatch) {
-        const allPlayers = Object.values(gameState.players);
-        switch (card.name) {
-            case 'Sobe':
-            case 'Desce':
-                allPlayers.forEach(p => {
-                    if (p.tournamentScoreEffect && p.tournamentScoreEffect.casterId === caster.id) {
-                        p.tournamentScoreEffect = null;
-                    }
-                });
-                target.tournamentScoreEffect = { effect: card.name, casterId: caster.id };
-                gameState.log.unshift({ type: 'system', message: `${casterName} usou ${card.name} em ${target.name}.` });
-                return;
-
-            case 'Pula':
-                if (gameState.reversusTotalActive) {
-                    gameState.log.unshift({ type: 'system', message: `Reversus Total está ativo e anulou a carta Pula de ${caster.name}!` });
-                    return; // Pula has no effect
-                }
-                if (target.tournamentScoreEffect) {
-                    const stolenEffect = { ...target.tournamentScoreEffect };
-                    target.tournamentScoreEffect = null;
-                    allPlayers.forEach(p => {
-                        if (p.tournamentScoreEffect && p.tournamentScoreEffect.casterId === caster.id) {
-                            p.tournamentScoreEffect = null;
-                        }
-                    });
-                    caster.tournamentScoreEffect = { effect: stolenEffect.effect, casterId: caster.id };
-                    gameState.log.unshift({ type: 'system', message: `${caster.name} usou Pula e roubou o efeito '${stolenEffect.effect}' de ${target.name}!` });
-                } else {
-                    gameState.log.unshift({ type: 'system', message: `${caster.name} usou Pula em ${target.name}, mas não havia efeito para roubar.` });
-                }
-                return;
-
-            case 'Reversus':
-                if (target.tournamentScoreEffect) {
-                    const effectToReverse = target.tournamentScoreEffect;
-                    if (effectToReverse.casterId !== target.id && caster.id === effectToReverse.casterId) {
-                        target.tournamentScoreEffect = null;
-                        allPlayers.forEach(p => {
-                            if (p.tournamentScoreEffect && p.tournamentScoreEffect.casterId === caster.id) {
-                                p.tournamentScoreEffect = null;
-                            }
-                        });
-                        caster.tournamentScoreEffect = { effect: effectToReverse.effect, casterId: caster.id };
-                        gameState.log.unshift({ type: 'system', message: `${caster.name} usou Reversus e recuperou seu efeito '${effectToReverse.effect}' de ${target.name}!` });
-
-                    } else {
-                        const newEffect = effectToReverse.effect === 'Sobe' ? 'Desce' : 'Sobe';
-                        effectToReverse.effect = newEffect;
-                        gameState.log.unshift({ type: 'system', message: `${caster.name} usou Reversus e inverteu o efeito em ${target.name} para '${newEffect}'!` });
-                    }
-                } else {
-                    gameState.log.unshift({ type: 'system', message: `${caster.name} usou Reversus em ${target.name}, mas não havia efeito para reverter.` });
-                }
-                return;
-            
-            case 'Mais':
-            case 'Menos':
-            case 'Reversus Total':
-                // Allow these cards to fall through to the general logic
-                break;
-            
-            default:
-                // Other effect cards have no special function in tournament matches
-                gameState.log.unshift({ type: 'system', message: `${casterName} usou ${card.name} em ${target.name}, mas não tem efeito especial no torneio.` });
-                return;
-        }
-    }
-
 
     let effectName = card.isLocked ? card.lockedEffect : card.name;
     const originalCardName = card.name;
@@ -288,28 +214,14 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
     else if (originalCardName === 'Reversus Total' && options.isGlobal) {
         gameState.log.unshift({ type: 'system', message: `${casterName} usou o Reversus Total Globalmente, invertendo todos os efeitos!` });
         gameState.reversusTotalActive = true;
-    
-        if (gameState.isTournamentMatch) {
-            Object.values(gameState.players).forEach(p => {
-                if (p.tournamentScoreEffect) {
-                    const currentEffect = p.tournamentScoreEffect.effect;
-                    if (currentEffect === 'Sobe') {
-                        p.tournamentScoreEffect.effect = 'Desce';
-                    } else if (currentEffect === 'Desce') {
-                        p.tournamentScoreEffect.effect = 'Sobe';
-                    }
-                }
-            });
-        } else { // Original logic for non-tournament games
-            Object.values(gameState.players).forEach(p => {
-                if (p.effects.score && !p.playedCards.effect.some(c => c.isLocked && ['Mais', 'Menos'].includes(c.lockedEffect))) {
-                    p.effects.score = getInverseEffect(p.effects.score);
-                }
-                if (p.effects.movement && p.effects.movement !== 'Pula' && !p.playedCards.effect.some(c => c.isLocked && ['Sobe', 'Desce'].includes(c.lockedEffect))) {
-                    p.effects.movement = getInverseEffect(p.effects.movement);
-                }
-            });
-        }
+        Object.values(gameState.players).forEach(p => {
+            if (p.effects.score && !p.playedCards.effect.some(c => c.isLocked && ['Mais', 'Menos'].includes(c.lockedEffect))) {
+                p.effects.score = getInverseEffect(p.effects.score);
+            }
+            if (p.effects.movement && p.effects.movement !== 'Pula' && !p.playedCards.effect.some(c => c.isLocked && ['Sobe', 'Desce'].includes(c.lockedEffect))) {
+                p.effects.movement = getInverseEffect(p.effects.movement);
+            }
+        });
     }
     else if (isScoreEffect) {
         target.effects.score = effectName;
@@ -558,7 +470,6 @@ async function startNewRound(room) {
         player.nextResto = null;
         player.effects = { score: null, movement: null };
         player.playedValueCardThisTurn = false;
-        player.tournamentScoreEffect = null;
     });
 
     gameState.reversusTotalActive = false;
@@ -610,11 +521,6 @@ async function calculateScoresAndEndRound(room) {
         
         if (p.effects.score === 'Menos') score -= (restoValue * scoreModifier);
         
-        if (gameState.isTournamentMatch && p.tournamentScoreEffect) {
-            if (p.tournamentScoreEffect.effect === 'Sobe') score += 5;
-            if (p.tournamentScoreEffect.effect === 'Desce') score -= 5;
-        }
-
         finalScores[id] = score;
     });
 
@@ -638,25 +544,19 @@ async function calculateScoresAndEndRound(room) {
     }
     
     if (room.isTournamentMatch) {
-        const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
-        gameState.log.unshift({ type: 'system', message: winners.length > 0 ? `Vencedor(es) da rodada: ${winnerNames}.` : "A rodada terminou em empate." });
-        io.to(room.id).emit('roundSummary', { winners, finalScores, potWon: 0 });
-        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait for players to see the summary
-        if (!rooms[room.id]) return; // Re-check if room still exists after delay
-
         const tournament = activeTournaments[room.tournamentId];
         const match = tournament.schedule[tournament.currentRound - 1].matches.find(m => m.matchId === room.id);
         
         let roundWinnerId = null;
         if (winners.length === 1) {
             roundWinnerId = winners[0];
-            const winnerIsP1 = match.p1.id === room.players.find(p => p.playerId === roundWinnerId)?.userProfile.id;
+            const winnerIsP1 = match.p1.id === room.players.find(p => p.playerId === roundWinnerId).userProfile.id;
             match.score[winnerIsP1 ? 0 : 1]++;
         } else {
             match.draws++;
         }
         
-        const humanSockets = room.players.filter(p => p.userProfile && !p.userProfile.isAI).map(p => p.id);
+        const humanSockets = room.players.filter(p => !p.userProfile.isAI).map(p => p.id);
         if (humanSockets.length > 0) {
             io.to(humanSockets).emit('tournamentMatchScoreUpdate', match.score);
         }
@@ -664,17 +564,10 @@ async function calculateScoresAndEndRound(room) {
         const [p1Score, p2Score] = match.score;
         const matchOver = p1Score >= 2 || p2Score >= 2 || (p1Score + p2Score + match.draws >= 3);
         
-        if (!rooms[room.id]) return;
-
         if (matchOver) {
-            let matchWinnerId;
-            if (p1Score > p2Score) {
-                matchWinnerId = match.p1.id;
-            } else if (p2Score > p1Score) {
-                matchWinnerId = match.p2.id;
-            } else {
-                matchWinnerId = 'draw';
-            }
+            let matchWinnerId = 'draw';
+            if (p1Score > p2Score) matchWinnerId = match.p1.id;
+            else if (p2Score > p1Score) matchWinnerId = match.p2.id;
 
             await processTournamentMatchResult(tournament, match, matchWinnerId);
             if (humanSockets.length > 0) io.to(humanSockets).emit('tournamentMatchEnd');
@@ -682,7 +575,6 @@ async function calculateScoresAndEndRound(room) {
         } else {
             await startNewRound(room);
         }
-
         return;
     }
     
@@ -733,7 +625,6 @@ function clearTurnTimers(room) {
 }
 
 function advanceToNextPlayerInRoom(room) {
-    if (!room || !room.gameState) return;
     let currentIndex = room.gameState.playerIdsInGame.indexOf(room.gameState.currentPlayer);
     let nextIndex = currentIndex;
     let attempts = 0;
@@ -764,7 +655,7 @@ async function handleTurnTimeout(room) {
     clearTurnTimers(room);
     
     if (room.gameState.turn < 3 && !room.isTournamentMatch) {
-        io.to(roomId).emit('matchCancelled', 'Partida anulada por inatividade no início.');
+        io.to(room.id).emit('matchCancelled', 'Partida anulada por inatividade no início.');
         delete rooms[room.id];
         return;
     }
@@ -787,21 +678,10 @@ function startTurnTimer(room) {
     if (!room || !room.gameState) return;
     clearTurnTimers(room);
 
-    // Check if it's an offline tournament match (1 human player max)
-    const isOfflineTournament = room.isTournamentMatch && room.players.filter(p => p.userProfile && !p.userProfile.isAI).length <= 1;
-
-    if (isOfflineTournament) {
-        // No timer for offline AI matches
-        room.gameState.remainingTurnTime = undefined;
-        broadcastGameState(room.id);
-        // The client will see the currentPlayer change in the gameStateUpdate
-        // and trigger the AI turn itself. This is safer.
-        return;
-    }
-
     const turnDuration = room.isTournamentMatch ? TOURNAMENT_TURN_DURATION_MS : REGULAR_TURN_DURATION_MS;
     room.gameState.remainingTurnTime = turnDuration / 1000;
-    
+    const currentPlayerId = room.gameState.currentPlayer;
+
     room.turnTimer = setTimeout(() => {
         if(rooms[room.id]) {
             handleTurnTimeout(room);
@@ -1391,17 +1271,9 @@ io.on('connection', (socket) => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
-        
-        if (!room || !room.gameState || !player) return;
-        
-        const isOfflineTournament = room.isTournamentMatch && room.players.filter(p => p.userProfile && !p.userProfile.isAI).length <= 1;
-        const currentPlayerState = room.gameState.players[room.gameState.currentPlayer];
-        const isMyTurn = room.gameState.currentPlayer === player.playerId;
-        const isMyAIsTurn = isOfflineTournament && !currentPlayerState.isHuman;
-
-        if (!isMyTurn && !isMyAIsTurn) return;
-
-        const playerState = room.gameState.players[room.gameState.currentPlayer];
+        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
+    
+        const playerState = room.gameState.players[player.playerId];
         const cardIndex = playerState.hand.findIndex(c => c.id === cardId);
         if (cardIndex === -1) return;
     
@@ -1425,7 +1297,7 @@ io.on('connection', (socket) => {
                 targetSlotLabel = 'Movimento';
             }
         }
-        io.to(roomId).emit('cardPlayedAnimation', { casterId: playerState.id, targetId, card, targetSlotLabel });
+        io.to(roomId).emit('cardPlayedAnimation', { casterId: player.playerId, targetId, card, targetSlotLabel });
     
         if (card.type === 'value') {
             playerState.playedCards.value.push(card);
@@ -1454,8 +1326,7 @@ io.on('connection', (socket) => {
                     if (cardToReplace.isLocked) {
                         room.gameState.log.unshift({ type: 'system', message: `O efeito ${cardToReplace.lockedEffect} em ${cardDestinationPlayer.name} está travado! A carta ${card.name} não teve efeito.` });
                         room.gameState.discardPiles.effect.push(card);
-                        broadcastGameState(roomId);
-                        return;
+                        return broadcastGameState(roomId);
                     } else {
                         const [removedCard] = cardDestinationPlayer.playedCards.effect.splice(cardToReplaceIndex, 1);
                         room.gameState.discardPiles.effect.push(removedCard);
@@ -1473,7 +1344,7 @@ io.on('connection', (socket) => {
             cardDestinationPlayer.playedCards.effect.push(card);
             applyEffect(room.gameState, card, targetId, playerState.name, options.effectType, options);
         }
-    
+        
         broadcastGameState(roomId);
     });
     
@@ -1481,22 +1352,17 @@ io.on('connection', (socket) => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         const player = room?.players.find(p => p.id === socket.id);
-        if (!room || !room.gameState || !player) return;
-
-        const currentPlayerState = room.gameState.players[room.gameState.currentPlayer];
-        const isMyTurn = room.gameState.currentPlayer === player.playerId;
-        const isMyAIsTurn = room.isTournamentMatch &&
-                            room.players.filter(p => p.userProfile && !p.userProfile.isAI).length <= 1 &&
-                            !currentPlayerState.isHuman;
-
-        if (!isMyTurn && !isMyAIsTurn) return;
+        if (!room || !room.gameState || !player || room.gameState.currentPlayer !== player.playerId) return;
 
         clearTurnTimers(room);
         room.gameState.consecutivePasses++;
         
         const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
+        if (activePlayers.length > 0 && room.gameState.consecutivePasses === activePlayers.length) {
+             room.gameState.log.unshift({ type: 'system', message: "ÚLTIMA CHAMADA! Todos os jogadores passaram. A rodada terminará se todos passarem novamente." });
+        }
         
-        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length) {
+        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length * 2) {
             await calculateScoresAndEndRound(room);
         } else {
             advanceToNextPlayerInRoom(room);
@@ -2178,7 +2044,7 @@ async function createTournamentMatch(tournament, match) {
 
     const basePlayerObject = (id, data, restoCard) => ({
         id: id,
-        name: data.username,
+        name: data.username.startsWith('event_chars.') || data.username.startsWith('player_names.') || data.username.startsWith('avatars.') ? data.username : data.username, // Pass key for translation
         isHuman: !data.isAI,
         aiType: data.isAI ? (data.aiType || 'default') : null,
         avatar_url: data.avatar_url,
@@ -2193,7 +2059,6 @@ async function createTournamentMatch(tournament, match) {
         liveScore: 0,
         status: 'neutral',
         isEliminated: false,
-        tournamentScoreEffect: null,
     });
 
     const players = {
