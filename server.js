@@ -620,13 +620,19 @@ async function calculateScoresAndEndRound(room) {
     }
     
     if (room.isTournamentMatch) {
+        const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
+        gameState.log.unshift({ type: 'system', message: winners.length > 0 ? `Vencedor(es) da rodada: ${winnerNames}.` : "A rodada terminou em empate." });
+        io.to(room.id).emit('roundSummary', { winners, finalScores, potWon: 0 });
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        if (!rooms[room.id]) return;
+
         const tournament = activeTournaments[room.tournamentId];
         const match = tournament.schedule[tournament.currentRound - 1].matches.find(m => m.matchId === room.id);
         
         let roundWinnerId = null;
         if (winners.length === 1) {
             roundWinnerId = winners[0];
-            const winnerIsP1 = match.p1.id === room.players.find(p => p.playerId === roundWinnerId).userProfile.id;
+            const winnerIsP1 = match.p1.id === room.players.find(p => p.playerId === roundWinnerId)?.userProfile.id;
             match.score[winnerIsP1 ? 0 : 1]++;
         } else {
             match.draws++;
