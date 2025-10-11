@@ -623,8 +623,8 @@ async function calculateScoresAndEndRound(room) {
         const winnerNames = winners.map(id => gameState.players[id].name).join(' e ');
         gameState.log.unshift({ type: 'system', message: winners.length > 0 ? `Vencedor(es) da rodada: ${winnerNames}.` : "A rodada terminou em empate." });
         io.to(room.id).emit('roundSummary', { winners, finalScores, potWon: 0 });
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        if (!rooms[room.id]) return;
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait for players to see the summary
+        if (!rooms[room.id]) return; // Re-check if room still exists after delay
 
         const tournament = activeTournaments[room.tournamentId];
         const match = tournament.schedule[tournament.currentRound - 1].matches.find(m => m.matchId === room.id);
@@ -638,7 +638,7 @@ async function calculateScoresAndEndRound(room) {
             match.draws++;
         }
         
-        const humanSockets = room.players.filter(p => !p.userProfile.isAI).map(p => p.id);
+        const humanSockets = room.players.filter(p => p.userProfile && !p.userProfile.isAI).map(p => p.id);
         if (humanSockets.length > 0) {
             io.to(humanSockets).emit('tournamentMatchScoreUpdate', match.score);
         }
@@ -1472,11 +1472,8 @@ io.on('connection', (socket) => {
         room.gameState.consecutivePasses++;
         
         const activePlayers = room.gameState.playerIdsInGame.filter(id => !room.gameState.players[id].isEliminated);
-        if (activePlayers.length > 0 && room.gameState.consecutivePasses === activePlayers.length) {
-             room.gameState.log.unshift({ type: 'system', message: "ÚLTIMA CHAMADA! Todos os jogadores passaram. A rodada terminará se todos passarem novamente." });
-        }
         
-        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length * 2) {
+        if (activePlayers.length > 0 && room.gameState.consecutivePasses >= activePlayers.length) {
             await calculateScoresAndEndRound(room);
         } else {
             advanceToNextPlayerInRoom(room);
