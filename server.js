@@ -189,11 +189,11 @@ const getInverseEffect = (effect) => {
 const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse, options = {}) => {
     const target = gameState.players[targetId];
     if (!target) return;
+    
+    const caster = Object.values(gameState.players).find(p => p.name === casterName);
+    if (!caster) return;
 
     if (gameState.isTournamentMatch) {
-        const caster = Object.values(gameState.players).find(p => p.name === casterName);
-        if (!caster) return;
-
         const allPlayers = Object.values(gameState.players);
         switch (card.name) {
             case 'Sobe':
@@ -208,6 +208,10 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
                 return;
 
             case 'Pula':
+                if (gameState.reversusTotalActive) {
+                    gameState.log.unshift({ type: 'system', message: `Reversus Total está ativo e anulou a carta Pula de ${caster.name}!` });
+                    return; // Pula has no effect
+                }
                 if (target.tournamentScoreEffect) {
                     const stolenEffect = { ...target.tournamentScoreEffect };
                     target.tournamentScoreEffect = null;
@@ -249,7 +253,7 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
             case 'Mais':
             case 'Menos':
             case 'Reversus Total':
-                // Allow these cards to function normally
+                // Allow these cards to fall through to the general logic
                 break;
             
             default:
@@ -284,14 +288,28 @@ const applyEffect = (gameState, card, targetId, casterName, effectTypeToReverse,
     else if (originalCardName === 'Reversus Total' && options.isGlobal) {
         gameState.log.unshift({ type: 'system', message: `${casterName} usou o Reversus Total Globalmente, invertendo todos os efeitos!` });
         gameState.reversusTotalActive = true;
-        Object.values(gameState.players).forEach(p => {
-            if (p.effects.score && !p.playedCards.effect.some(c => c.isLocked && ['Mais', 'Menos'].includes(c.lockedEffect))) {
-                p.effects.score = getInverseEffect(p.effects.score);
-            }
-            if (p.effects.movement && p.effects.movement !== 'Pula' && !p.playedCards.effect.some(c => c.isLocked && ['Sobe', 'Desce'].includes(c.lockedEffect))) {
-                p.effects.movement = getInverseEffect(p.effects.movement);
-            }
-        });
+    
+        if (gameState.isTournamentMatch) {
+            Object.values(gameState.players).forEach(p => {
+                if (p.tournamentScoreEffect) {
+                    const currentEffect = p.tournamentScoreEffect.effect;
+                    if (currentEffect === 'Sobe') {
+                        p.tournamentScoreEffect.effect = 'Desce';
+                    } else if (currentEffect === 'Desce') {
+                        p.tournamentScoreEffect.effect = 'Sobe';
+                    }
+                }
+            });
+        } else { // Original logic for non-tournament games
+            Object.values(gameState.players).forEach(p => {
+                if (p.effects.score && !p.playedCards.effect.some(c => c.isLocked && ['Mais', 'Menos'].includes(c.lockedEffect))) {
+                    p.effects.score = getInverseEffect(p.effects.score);
+                }
+                if (p.effects.movement && p.effects.movement !== 'Pula' && !p.playedCards.effect.some(c => c.isLocked && ['Sobe', 'Desce'].includes(c.lockedEffect))) {
+                    p.effects.movement = getInverseEffect(p.effects.movement);
+                }
+            });
+        }
     }
     else if (isScoreEffect) {
         target.effects.score = effectName;
@@ -649,9 +667,14 @@ async function calculateScoresAndEndRound(room) {
         if (!rooms[room.id]) return;
 
         if (matchOver) {
-            let matchWinnerId = 'draw';
-            if (p1Score > p2Score) matchWinnerId = match.p1.id;
-            else if (p2Score > p1Score) matchWinnerId = match.p2.id;
+            let matchWinnerId;
+            if (p1Score > p2Score) {
+                matchWinnerId = match.p1.id;
+            } else if (p2Score > p1Score) {
+                matchWinnerId = match.p2.id;
+            } else {
+                matchWinnerId = 'draw';
+            }
 
             await processTournamentMatchResult(tournament, match, matchWinnerId);
             if (humanSockets.length > 0) io.to(humanSockets).emit('tournamentMatchEnd');
