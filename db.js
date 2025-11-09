@@ -502,8 +502,16 @@ async function getUserProfile(googleId, requesterId = null) {
   const historyRes = await pool.query(`SELECT outcome, mode, opponents, date FROM user_match_history WHERE user_id = $1 ORDER BY date DESC LIMIT 15`, [user.id]);
   const friendshipStatus = (requesterId && requesterId !== user.id) ? await getFriendshipStatus(requesterId, user.id) : null;
   const ownedAvatarsRes = await pool.query(`SELECT avatar_code FROM user_avatars WHERE user_id = $1`, [user.id]);
+  const achievementsRes = await pool.query(`SELECT achievement_code FROM user_achievements WHERE user_id = $1`, [user.id]);
 
-  return { ...user, titles: titlesRes.rows, history: historyRes.rows, friendshipStatus, owned_avatars: ownedAvatarsRes.rows.map(r => r.avatar_code) };
+  return { 
+      ...user, 
+      titles: titlesRes.rows, 
+      history: historyRes.rows, 
+      friendshipStatus, 
+      owned_avatars: ownedAvatarsRes.rows.map(r => r.avatar_code),
+      achievements: achievementsRes.rows.map(r => r.achievement_code)
+  };
 }
 
 async function claimDailyReward(userId) {
