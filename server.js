@@ -1,4 +1,5 @@
 // server.js --- SERVIDOR DE JOGO PVP COMPLETO COM BANCO DE DADOS ---
+app.get('/', (req, res) => res.status(200).send('OK'));
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
