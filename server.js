@@ -1,5 +1,4 @@
 // server.js --- SERVIDOR DE JOGO PVP COMPLETO COM BANCO DE DADOS ---
-app.get('/', (req, res) => res.status(200).send('OK'));
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
@@ -9,6 +8,13 @@ const db = require('./db.js');
 
 const app = express();
 const server = http.createServer(app);
+
+// --- CORREÇÃO PARA O EASYPANEL (HEALTH CHECK) ---
+// Agora sim, podemos usar o 'app' porque ele já foi criado na linha acima
+app.get('/', (req, res) => {
+    res.status(200).send('Reversus Server is ALIVE! 🚀');
+});
+// ------------------------------------------------
 
 const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
