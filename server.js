@@ -15,7 +15,7 @@ const ADMIN_EMAIL = 'alexblbn@gmail.com';
 
 const io = new Server(server, {
   cors: {
-    origin: ["https://reversus.online", "https://reversus-game.dke42d.easypanel.host", "http://localhost:8080"],
+    origin: ["https://reversus-node.rtk4h7.easypanel.host", "http://localhost:8080"],
     methods: ["GET", "POST"]
   }
 });
