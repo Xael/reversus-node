@@ -1,20 +1,25 @@
-# Imagem base oficial Node
+# 1. Imagem Base (Node 18 é estável e compatível)
 FROM node:18
 
-# Criar diretório de trabalho
+# 2. Diretório de trabalho dentro do container
 WORKDIR /app
 
-# Copiar arquivos de dependência
+# 3. Copia os arquivos de configuração primeiro
 COPY package*.json ./
 
-# Instalar dependências
-RUN npm install --production
+# 4. Instala TODAS as dependências (inclusive as de dev para fazer o build)
+# IMPORTANTE: Removemos o '--production' para que o comando 'build' funcione
+RUN npm install
 
-# Copiar o restante do código
+# 5. Copia todo o código do projeto para dentro do container
 COPY . .
 
-# Expor a porta (vai ser mapeada pelo EasyPanel)
+# 6. O PASSO MÁGICO: Constrói o frontend
+# Isso transforma seus arquivos .tsx em .html e .js na pasta 'dist' (ou 'build')
+RUN npm run build
+
+# 7. Expõe a porta 3000 (para o Easypanel mapear)
 EXPOSE 3000
 
-# Comando de start
-CMD ["npm", "start"]
+# 8. Inicia o servidor Node direto (mais estável que npm start)
+CMD ["node", "server.js"]
