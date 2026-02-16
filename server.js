@@ -29,8 +29,11 @@ const ADMIN_EMAIL = 'alexblbn@gmail.com';
 const io = new Server(server, {
   cors: {
     origin: [
-      "https://reversus-reversus.rtk4h7.easypanel.host", // SEU SITE
-      "https://reversus-node.rtk4h7.easypanel.host",     // SEU BACKEND
+      "https://projectxael.com.br",            // SEU NOVO SITE (FRONTEND)
+      "https://backend.projectxael.com.br",    // SEU NOVO BACKEND
+      "https://reversus.projectxael.com.br",   // CASO USE O SUBDOMÍNIO REVERSUS
+      "https://reversus-reversus.rtk4h7.easypanel.host",
+      "https://reversus-node.rtk4h7.easypanel.host",
       "http://localhost:8080",
       "http://localhost:3000"
     ],
