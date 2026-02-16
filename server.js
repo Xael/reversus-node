@@ -5,16 +5,21 @@ const { Server } = require("socket.io");
 const { OAuth2Client } = require('google-auth-library');
 const crypto = require('crypto');
 const db = require('./db.js');
+const path = require('path');
 
 const app = express();
-const server = http.createServer(app);
 
-// --- CORREÇÃO PARA O EASYPANEL (HEALTH CHECK) ---
-// Agora sim, podemos usar o 'app' porque ele já foi criado na linha acima
-app.get('/', (req, res) => {
-    res.status(200).send('Reversus Server is ALIVE! 🚀');
+// --- 1. ROTA DE SAÚDE (EASYPANEL) ---
+// Deve vir ANTES do static e do '*'
+app.get('/health', (req, res) => {
+    res.status(200).send('OK');
 });
-// ------------------------------------------------
+
+// --- 2. ARQUIVOS ESTÁTICOS ---
+app.use(express.static(path.join(__dirname, 'dist'))); 
+
+// --- 3. SERVIDOR HTTP ---
+const server = http.createServer(app);
 
 const GOOGLE_CLIENT_ID = "2701468714-udbjtea2v5d1vnr8sdsshi3lem60dvkn.apps.googleusercontent.com";
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
@@ -22,8 +27,14 @@ const ADMIN_EMAIL = 'alexblbn@gmail.com';
 
 const io = new Server(server, {
   cors: {
-    origin: ["https://reversus-node.rtk4h7.easypanel.host", "http://localhost:8080"],
-    methods: ["GET", "POST"]
+    origin: [
+      "https://reversus-reversus.rtk4h7.easypanel.host", // SEU SITE
+      "https://reversus-node.rtk4h7.easypanel.host",     // SEU BACKEND
+      "http://localhost:8080",
+      "http://localhost:3000"
+    ],
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
@@ -2172,8 +2183,8 @@ async function endTournament(tournament) {
     delete activeTournaments[tournament.id];
 }
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', async () => {
+const PORT = process.env.PORT || 8080; // Mudou aqui
+server.listen(PORT, '0.0.0.0', async () => { ... });
     try {
         console.log(`--- SERVIDOR DE JOGO REVERSUS ONLINE ---`);
         console.log(`O servidor está rodando e escutando na porta: ${PORT}`);
