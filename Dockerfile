@@ -19,7 +19,8 @@ COPY . .
 RUN npm run build
 
 # 7. Expõe a porta 3000 (para o Easypanel mapear)
-EXPOSE 3000
+EXPOSE 8080
 
 # 8. Inicia o servidor Node direto (mais estável que npm start)
 CMD ["node", "server.js"]
+
