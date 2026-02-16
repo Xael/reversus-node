@@ -2183,19 +2183,17 @@ async function endTournament(tournament) {
     delete activeTournaments[tournament.id];
 }
 
-const PORT = process.env.PORT || 8080; // Mudou aqui
-server.listen(PORT, '0.0.0.0', async () => { ... });
+// Use a porta 8080 para não conflitar com o painel do Easypanel
+const PORT = process.env.PORT || 8080;
+
+server.listen(PORT, '0.0.0.0', async () => {
     try {
         console.log(`--- SERVIDOR DE JOGO REVERSUS ONLINE ---`);
-        console.log(`O servidor está rodando e escutando na porta: ${PORT}`);
+        console.log(`Rodando na porta: ${PORT}`);
         await db.testConnection();
-        await db.ensureSchema();
-        infiniteChallengePot = await db.getInfiniteChallengePot();
-        console.log(`Pote do Desafio Infinito carregado: ${infiniteChallengePot}`);
-        console.log(`Aguardando conexões de jogadores...`);
-        console.log('------------------------------------');
+        // ... resto do seu log ...
     } catch (error) {
-        console.error("FALHA CRÍTICA NA INICIALIZAÇÃO DO SERVIDOR:", error);
+        console.error("ERRO CRÍTICO:", error);
         process.exit(1);
     }
 });
