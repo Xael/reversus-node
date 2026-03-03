@@ -31,9 +31,9 @@ const io = new Server(server, {
     origin: [
       "https://projectxael.com.br",            // SEU NOVO SITE (FRONTEND)
       "https://backend.projectxael.com.br",    // SEU NOVO BACKEND
-      "https://reversus.projectxael.com.br",   // CASO USE O SUBDOMÍNIO REVERSUS
-      "https://reversus-reversus.rtk4h7.easypanel.host",
-      "https://reversus-node.rtk4h7.easypanel.host",
+      "https://reversus-game.projectxael.com.br",   // CASO USE O SUBDOMÍNIO REVERSUS
+      "https://reversus-game.u4marj.easypanel.host",
+      "https://reversus-node.u4marj.easypanel.host",
       "http://localhost:8080",
       "http://localhost:3000"
     ],
