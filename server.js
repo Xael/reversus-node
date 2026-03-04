@@ -2196,7 +2196,7 @@ async function endTournament(tournament) {
 }
 
 // Use a porta 8080 para não conflitar com o painel do Easypanel
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, '0.0.0.0', async () => {
     try {
