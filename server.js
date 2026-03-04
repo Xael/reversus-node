@@ -8,6 +8,13 @@ const db = require('./db.js');
 const path = require('path');
 
 const app = express();
+const cors = require('cors'); // Adicione esta importação no topo
+
+// --- 0. CONFIGURAÇÃO GLOBAL DE CORS (DEVE SER A PRIMEIRA COISA) ---
+app.use(cors({
+  origin: "https://reversus-game.projectxael.com.br",
+  credentials: true
+}));
 
 // --- 1. ROTA DE SAÚDE (EASYPANEL) ---
 // Deve vir ANTES do static e do '*'
@@ -29,17 +36,18 @@ const ADMIN_EMAIL = 'alexblbn@gmail.com';
 const io = new Server(server, {
   cors: {
     origin: [
+      "https://reversus-game.projectxael.com.br",   // CASO USE O SUBDOMÍNIO REVERSUS
       "https://projectxael.com.br",            // SEU NOVO SITE (FRONTEND)
       "https://backend.projectxael.com.br",    // SEU NOVO BACKEND
-      "https://reversus-game.projectxael.com.br",   // CASO USE O SUBDOMÍNIO REVERSUS
       "https://reversus-game.u4marj.easypanel.host",
       "https://reversus-node.u4marj.easypanel.host",
       "http://localhost:8080",
       "http://localhost:3000"
     ],
     methods: ["GET", "POST"],
-    credentials: true
-  }
+credentials: true
+  },
+  allowEIO3: true // Adicionado para compatibilidade com versões do cliente
 });
 
 const rooms = {};
