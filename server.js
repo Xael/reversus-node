@@ -2201,10 +2201,22 @@ server.listen(PORT, '0.0.0.0', async () => {
     try {
         console.log(`--- SERVIDOR DE JOGO REVERSUS ONLINE ---`);
         console.log(`Rodando na porta: ${PORT}`);
+        
+        // 1. Testa a conexão física
         await db.testConnection();
-        // ... resto do seu log ...
+        
+        // 2. CRIA AS TABELAS (A mágica que falta para o Error 500 sumir)
+        console.log("Sincronizando tabelas do banco de dados...");
+        await db.ensureSchema(); 
+        console.log("Banco de dados pronto e tabelas verificadas!");
+
+        // 3. Inicializa o pote do desafio se estiver nulo
+        if (infiniteChallengePot === null) {
+            infiniteChallengePot = await db.getInfiniteChallengePot();
+        }
+
     } catch (error) {
-        console.error("ERRO CRÍTICO:", error);
+        console.error("ERRO CRÍTICO NA INICIALIZAÇÃO:", error);
         process.exit(1);
     }
 });
