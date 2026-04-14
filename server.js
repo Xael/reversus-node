@@ -35,15 +35,14 @@ const ADMIN_EMAIL = 'alexblbn@gmail.com';
 
 const io = new Server(server, {
   cors: {
-    origin: [
-      "https://reversus-game.projectxael.com.br",   // CASO USE O SUBDOMÍNIO REVERSUS
-      "https://projectxael.com.br",            // SEU NOVO SITE (FRONTEND)
-      "https://backend.projectxael.com.br",    // SEU NOVO BACKEND
-      "https://reversus-game.u4marj.easypanel.host",
-      "https://reversus-node.u4marj.easypanel.host",
-      "http://localhost:8080",
-      "http://localhost:3000"
-    ],
+origin: [
+  "https://reversus.projectxael.com.br",        // Seu jogo principal
+  "https://reversus-game.projectxael.com.br",   // Caso use o nome maior
+  "https://projectxael.com.br",                 // Domínio raiz
+  "https://api.projectxael.com.br",             // Sua API (Backend)
+  "http://localhost:8080",                      // Dev local
+  "http://localhost:3000"                       // Dev local
+],
     methods: ["GET", "POST"],
 credentials: true
   },
