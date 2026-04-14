@@ -5,7 +5,13 @@ const poolConfig = {
   connectionString: process.env.DATABASE_URL,
 };
 
-if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("localhost") && !process.env.DATABASE_URL.includes("127.0.0.1")) {
+// Se não for localhost E não for a rede interna do Coolify, ativa o SSL
+if (
+  process.env.DATABASE_URL && 
+  !process.env.DATABASE_URL.includes("localhost") && 
+  !process.env.DATABASE_URL.includes("127.0.0.1") &&
+  !process.env.DATABASE_URL.includes("vdtebxumo1qupt25greazcgq") // Adicione o ID do seu banco aqui
+) {
   poolConfig.ssl = {
     rejectUnauthorized: false
   };
