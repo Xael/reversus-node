@@ -29,7 +29,7 @@ app.use(express.static(path.join(__dirname, 'dist')));
 const server = http.createServer(app);
 
 // Use o NOVO ID que você acabou de criar
-const GOOGLE_CLIENT_ID = "199798189413-ttgbqcjdh9ukht4uq8td8bvhtfg40ohg.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID = "376487282164-8n4r548sge2t874r0fsmofgnql4s97bk.apps.googleusercontent.com";
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 const ADMIN_EMAIL = 'alexblbn@gmail.com';
 
